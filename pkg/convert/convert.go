@@ -3,19 +3,22 @@ package convert
 import (
 	"bufio"
 	"chainguard.dev/melange/pkg/build"
+	"crypto/sha256"
 	"fmt"
 	"github.com/pkg/errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
 
-type Context struct {
-	ApkBuild       *ApkBuild
-	ConfigFilename string
-	OutDir         string
-	Client         *http.Client
+type context struct {
+	ApkBuild              *ApkBuild
+	GeneratedMelageConfig *GeneratedMelageConfig
+	ConfigFilename        string
+	OutDir                string
+	Client                *http.Client
 }
 type ApkBuild struct {
 	PackageName    string   `yaml:"pkgname"`
@@ -31,12 +34,12 @@ type ApkBuild struct {
 	Source         string   `yaml:"source"`
 }
 type GeneratedMelageConfig struct {
-	build.Package
+	build.Configuration
 	generatedFromComment string `yaml:"#"`
 }
 
-func New(configFilename string) (Context, error) {
-	context := Context{}
+func New(configFilename string) (context, error) {
+	context := context{}
 
 	err := validate(configFilename)
 	if err != nil {
@@ -46,6 +49,7 @@ func New(configFilename string) (Context, error) {
 
 	context.Client = &http.Client{}
 	context.ApkBuild = &ApkBuild{}
+	context.GeneratedMelageConfig = &GeneratedMelageConfig{}
 
 	return context, nil
 }
@@ -61,25 +65,22 @@ func validate(configFile string) error {
 	return nil
 }
 
-func (c Context) getApkBuildFile() error {
+func (c context) getApkBuildFile() error {
 
-	fullURLFile := c.ConfigFilename
-
-	// Put content on file
-	resp, err := c.Client.Get(fullURLFile)
+	resp, err := c.Client.Get(c.ConfigFilename)
 	if err != nil {
-		return errors.Wrapf(err, "getting %s", fullURLFile)
+		return errors.Wrapf(err, "getting %s", c.ConfigFilename)
 	}
 	defer resp.Body.Close()
 
 	err = c.parseApkBuild(resp.Body)
 	if err != nil {
-		return errors.Wrapf(err, "failed to parse apkbuild %s", fullURLFile)
+		return errors.Wrapf(err, "failed to parse apkbuild %s", c.ConfigFilename)
 	}
 	return nil
 }
 
-func (c Context) parseApkBuild(r io.Reader) error {
+func (c context) parseApkBuild(r io.Reader) error {
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -124,18 +125,50 @@ func (c Context) parseApkBuild(r io.Reader) error {
 	}
 	return nil
 }
-func (c Context) getSourceSha() {
+func (c context) buildFetchStep() error {
+	source := strings.ReplaceAll(c.ApkBuild.Source, "$pkgver", c.ApkBuild.PackageVersion)
+	_, err := url.ParseRequestURI(source)
+	if err != nil {
+		return errors.Wrapf(err, "parsing URI %s", source)
+	}
+
+	if !strings.HasSuffix(source, "tar.xz") || !strings.HasSuffix(source, "tar.xz") {
+		return fmt.Errorf("only tar.xz and tar.xz currently supported")
+	}
+
+	resp, err := c.Client.Get(source)
+	if err != nil {
+		return errors.Wrapf(err, "getting %s", c.ConfigFilename)
+	}
+	defer resp.Body.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, resp.Body); err != nil {
+		return errors.Wrapf(err, "generating sha265 for %s", c.ConfigFilename)
+	}
+
+	expectedSha := h.Sum(nil)
+
+	pipeline := build.Pipeline{
+		Uses: "fetch",
+		With: map[string]string{
+			"uri":             source,
+			"expected-sha256": fmt.Sprintf("%x", expectedSha),
+		},
+	}
+	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, pipeline)
+
+	return nil
+}
+
+func (c context) mapMelange() {
 
 }
 
-func (c Context) mapMelange() {
+func (c context) write() {
 
 }
 
-func (c Context) write() {
-
-}
-
-func (c Context) name() {
+func (c context) name() {
 
 }
