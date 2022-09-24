@@ -1,29 +1,50 @@
-pkgname=util-macros
-pkgver=1.19.3
-pkgrel=0
-pkgdesc="X.Org Autotools macros"
-url="https://xorg.freedesktop.org"
-arch="noarch"
-license="MIT"
-source="https://www.x.org/releases/individual/util/util-macros-$pkgver.tar.bz2"
+pkgname=libx11
+pkgver=1.8.1
+pkgrel=1
+pkgdesc="X11 client-side library"
+url="https://xorg.freedesktop.org/"
+arch="all"
+license="custom:XFREE86"
+subpackages="$pkgname-static $pkgname-dev $pkgname-doc"
+depends_dev="libxcb-dev xtrans"
+makedepends="$depends_dev xorgproto util-macros xmlto"
+source="https://www.x.org/releases/individual/lib/libX11-$pkgver.tar.xz"
+builddir="$srcdir"/libX11-$pkgver
+
+# secfixes:
+#   1.7.1-r0:
+#     - CVE-2021-31535
+#   1.6.12-r0:
+#     - CVE-2020-14363
+#   1.6.10-r0:
+#     - CVE-2020-14344
+#   1.6.6-r0:
+#     - CVE-2018-14598
+#     - CVE-2018-14599
+#     - CVE-2018-14600
 
 build() {
-  ./configure \
-  --build=$CBUILD \
-  --host=$CHOST \
-  --prefix=/usr
-  make
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--localstatedir=/var \
+		--with-xcb \
+		--disable-thread-safety-constructor
+	make
 }
 
 check() {
-  make check
+	make check
 }
 
 package() {
-  make DESTDIR="$pkgdir" install
-    
-  mkdir -p "$pkgdir"/usr/lib
-  mv "$pkgdir"/usr/share/pkgconfig "$pkgdir"/usr/lib
+	make DESTDIR="$pkgdir" install
+	install -Dm644 COPYING "$pkgdir"/usr/share/licenses/$pkgname/COPYING
 }
 
-sha512sums="b9c7398a912c688a782eab5b1e0f6da2df11a430775c5c98fc3269f73a665de6eeb60d300a849e38d345714a6e51f74e9334cb6039767304cca4b93d823a53a2  util-macros-1.19.3.tar.bz2"
+sha512sums="
+2e36d2c47519e0cb2697f588c0ccdf73fbe75c2163f0855c78f7052dc9e920bca081f9d5e39c707a14067f101faef74fc758c8862eeba675b1535b43119d533a  libX11-1.8.1.tar.xz
+"
