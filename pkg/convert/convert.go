@@ -126,19 +126,25 @@ func (c context) parseApkBuild(r io.Reader) error {
 	return nil
 }
 func (c context) buildFetchStep() error {
+	if c.ApkBuild.Source == "" {
+		return fmt.Errorf("no source URL")
+	}
+	if c.ApkBuild.PackageVersion == "" {
+		return fmt.Errorf("no package version")
+	}
 	source := strings.ReplaceAll(c.ApkBuild.Source, "$pkgver", c.ApkBuild.PackageVersion)
 	_, err := url.ParseRequestURI(source)
 	if err != nil {
 		return errors.Wrapf(err, "parsing URI %s", source)
 	}
 
-	if !strings.HasSuffix(source, "tar.xz") || !strings.HasSuffix(source, "tar.xz") {
-		return fmt.Errorf("only tar.xz and tar.xz currently supported")
+	if !strings.HasSuffix(source, "tar.xz") && !strings.HasSuffix(source, "tar.gz") {
+		return fmt.Errorf("only tar.xz and tar.gz currently supported")
 	}
 
 	resp, err := c.Client.Get(source)
 	if err != nil {
-		return errors.Wrapf(err, "getting %s", c.ConfigFilename)
+		return errors.Wrapf(err, "failed getting URI %s", c.ConfigFilename)
 	}
 	defer resp.Body.Close()
 

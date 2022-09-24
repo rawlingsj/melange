@@ -58,52 +58,62 @@ func TestContext_getSourceSha(t *testing.T) {
 		TestUrl        string
 		PackageVersion string
 	}
-	tests := []struct {
-		name    string
-		fields  fields
-		wantErr assert.ErrorAssertionFunc
+	var tests = []struct {
+		name   string
+		fields fields
 	}{
 		{
-			name: "foo-1.2.3.tar.xz",
+			name: "tar.xz",
 			fields: fields{
-				TestUrl:        "/releases/foo/foo-$pkgver.tar.xz",
+				TestUrl:        "foo-$pkgver.tar.xz",
 				PackageVersion: "1.2.3",
 				ExpectedSha:    "6b23c4b39242db1d58ab397387b7a3a325e903cd4df332f5a089ac63cc1ca049",
 			},
-			wantErr: nil,
+		},
+		{
+			name: "tar.gz",
+			fields: fields{
+				TestUrl:        "bar-$pkgver.tar.gz",
+				PackageVersion: "4.5.6",
+				ExpectedSha:    "cc2c52929ace57623ff517408a577e783e10042655963b2c8f0633e109337d7a",
+			},
 		},
 	}
-
 	for _, tt := range tests {
-		data, err := os.ReadFile(filepath.Join("testdata", tt.name))
+		// read testdata file
+		testFilename := strings.ReplaceAll(tt.fields.TestUrl, "$pkgver", tt.fields.PackageVersion)
+		data, err := os.ReadFile(filepath.Join("testdata", testFilename))
 		assert.NoError(t, err)
-		source := strings.ReplaceAll(tt.fields.TestUrl, "$pkgver", tt.fields.PackageVersion)
+
 		server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 			// Test request parameters
-			assert.Equal(t, req.URL.String(), source)
+			assert.Equal(t, req.URL.String(), "/"+testFilename)
+
 			// Send response to be tested
 			_, err = rw.Write(data)
 			assert.NoError(t, err)
+
 		}))
+
+		// initialise context with test values
+		c := context{
+			ApkBuild: &ApkBuild{
+				Source:         server.URL + "/" + tt.fields.TestUrl,
+				PackageVersion: tt.fields.PackageVersion,
+			},
+			Client:                server.Client(),
+			GeneratedMelageConfig: &GeneratedMelageConfig{},
+		}
 
 		t.Run(tt.name, func(t *testing.T) {
 
-			c := context{
-				ApkBuild: &ApkBuild{
-					Source:         server.URL + tt.fields.TestUrl,
-					PackageVersion: tt.fields.PackageVersion,
-				},
-				Client:                server.Client(),
-				GeneratedMelageConfig: &GeneratedMelageConfig{},
-			}
-
 			with := map[string]string{
-				"uri":             server.URL + source,
+				"uri":             server.URL + "/" + testFilename,
 				"expected-sha256": tt.fields.ExpectedSha,
 			}
 			pipeline := build.Pipeline{Uses: "fetch", With: with}
-			err = c.buildFetchStep()
-			assert.NoError(t, err)
+
+			assert.NoError(t, c.buildFetchStep())
 			assert.Equalf(t, pipeline, c.GeneratedMelageConfig.Pipeline[0], "expected sha incorrect")
 
 		})
