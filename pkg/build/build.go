@@ -62,21 +62,21 @@ type PackageOption struct {
 }
 
 type Package struct {
-	Name               string
-	Version            string
-	Epoch              uint64
-	Description        string
-	TargetArchitecture []string `yaml:"target-architecture"`
-	Copyright          []Copyright
+	Name               string      `yaml:"name"`
+	Version            string      `yaml:"version"`
+	Epoch              uint64      `yaml:"epoch"`
+	Description        string      `yaml:"description"`
+	TargetArchitecture []string    `yaml:"target-architecture"`
+	Copyright          []Copyright `yaml:"copyright"`
 	Dependencies       Dependencies
 	Options            PackageOption
 	Scriptlets         Scriptlets
 }
 
 type Copyright struct {
-	Paths       []string
-	Attestation string
-	License     string
+	Paths       []string `yaml:"paths"`
+	Attestation string   `yaml:"attestation"`
+	License     string   `yaml:"license"`
 }
 
 type Needs struct {
@@ -84,10 +84,10 @@ type Needs struct {
 }
 
 type Pipeline struct {
-	Name     string
-	Uses     string
-	With     map[string]string
-	Runs     string
+	Name     string            `yaml:"uses,omitempty"`
+	Uses     string            `yaml:"uses,omitempty"`
+	With     map[string]string `yaml:"with,omitempty"`
+	Runs     string            `yaml:"with,omitempty"`
 	Pipeline []Pipeline
 	Inputs   map[string]Input
 	Needs    Needs
@@ -95,12 +95,12 @@ type Pipeline struct {
 }
 
 type Subpackage struct {
-	Name         string
-	Pipeline     []Pipeline
-	Dependencies Dependencies
+	Name         string       `yaml:"name"`
+	Pipeline     []Pipeline   `yaml:"pipeline"`
+	Dependencies Dependencies `yaml:"dependencies"`
 	Options      PackageOption
 	Scriptlets   Scriptlets
-	Description  string
+	Description  string `yaml:"description"`
 }
 
 type Input struct {
@@ -110,10 +110,10 @@ type Input struct {
 }
 
 type Configuration struct {
-	Package     Package
-	Environment apko_types.ImageConfiguration
-	Pipeline    []Pipeline
-	Subpackages []Subpackage
+	Package     Package                       `yaml:"package"`
+	Environment apko_types.ImageConfiguration `yaml:"environment"`
+	Pipeline    []Pipeline                    `yaml:"pipeline"`
+	Subpackages []Subpackage                  `yaml:"subpackages"`
 }
 
 type Context struct {
