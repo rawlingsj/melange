@@ -62,15 +62,15 @@ type PackageOption struct {
 }
 
 type Package struct {
-	Name               string      `yaml:"name"`
-	Version            string      `yaml:"version"`
-	Epoch              uint64      `yaml:"epoch"`
-	Description        string      `yaml:"description"`
-	TargetArchitecture []string    `yaml:"target-architecture"`
-	Copyright          []Copyright `yaml:"copyright"`
-	Dependencies       Dependencies
-	Options            PackageOption
-	Scriptlets         Scriptlets
+	Name               string        `yaml:"name"`
+	Version            string        `yaml:"version"`
+	Epoch              uint64        `yaml:"epoch,omitempty"`
+	Description        string        `yaml:"description,omitempty"`
+	TargetArchitecture []string      `yaml:"target-architecture"`
+	Copyright          []Copyright   `yaml:"copyright,omitempty"`
+	Dependencies       Dependencies  `yaml:"dependencies,omitempty"`
+	Options            PackageOption `yaml:"options,omitempty"`
+	Scriptlets         Scriptlets    `yaml:"scriptlets,omitempty"`
 }
 
 type Copyright struct {
@@ -84,23 +84,23 @@ type Needs struct {
 }
 
 type Pipeline struct {
-	Name     string            `yaml:"uses,omitempty"`
+	Name     string            `yaml:"name,omitempty"`
 	Uses     string            `yaml:"uses,omitempty"`
 	With     map[string]string `yaml:"with,omitempty"`
-	Runs     string            `yaml:"with,omitempty"`
-	Pipeline []Pipeline
-	Inputs   map[string]Input
-	Needs    Needs
+	Runs     string            `yaml:"runs,omitempty"`
+	Pipeline []Pipeline        `yaml:"pipeline,omitempty"`
+	Inputs   map[string]Input  `yaml:"inputs,omitempty"`
+	Needs    Needs             `yaml:"needs,omitempty"`
 	logger   *log.Logger
 }
 
 type Subpackage struct {
-	Name         string       `yaml:"name"`
-	Pipeline     []Pipeline   `yaml:"pipeline"`
-	Dependencies Dependencies `yaml:"dependencies"`
-	Options      PackageOption
-	Scriptlets   Scriptlets
-	Description  string `yaml:"description"`
+	Name         string        `yaml:"name"`
+	Pipeline     []Pipeline    `yaml:"pipeline,omitempty"`
+	Dependencies Dependencies  `yaml:"dependencies,omitempty"`
+	Options      PackageOption `yaml:"packageOption,omitempty"`
+	Scriptlets   Scriptlets    `yaml:"scriptlets,omitempty"`
+	Description  string        `yaml:"description"`
 }
 
 type Input struct {
@@ -111,9 +111,9 @@ type Input struct {
 
 type Configuration struct {
 	Package     Package                       `yaml:"package"`
-	Environment apko_types.ImageConfiguration `yaml:"environment"`
-	Pipeline    []Pipeline                    `yaml:"pipeline"`
-	Subpackages []Subpackage                  `yaml:"subpackages"`
+	Environment apko_types.ImageConfiguration `yaml:"environment,omitempty"`
+	Pipeline    []Pipeline                    `yaml:"pipeline,omitempty"`
+	Subpackages []Subpackage                  `yaml:"subpackages,omitempty"`
 }
 
 type Context struct {
@@ -142,8 +142,8 @@ type Context struct {
 }
 
 type Dependencies struct {
-	Runtime  []string
-	Provides []string
+	Runtime  []string `yaml:"runtime,omitempty"`
+	Provides []string `yaml:"provides,omitempty"`
 }
 
 func New(opts ...Option) (*Context, error) {

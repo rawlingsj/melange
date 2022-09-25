@@ -1,0 +1,23 @@
+package:
+  name: test_pkg
+  version: 1.2.3
+  description: test package description
+  target-architecture:
+    - all
+  copyright:
+    - paths:
+        - "*"
+      attestation: TODO
+      license: MIT
+pipeline:
+  - uses: autoconf/configure
+  - uses: autoconf/make
+  - uses: autoconf/make-install
+subpackages:
+  - name: test_pkg-dev
+    pipeline:
+      - uses: split/dev
+    dependencies:
+      runtime:
+        - test_pkg
+    description: test_pkg headers

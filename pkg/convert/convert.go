@@ -2,6 +2,7 @@ package convert
 
 import (
 	"bufio"
+	apko_types "chainguard.dev/apko/pkg/build/types"
 	"chainguard.dev/melange/pkg/build"
 	"crypto/sha256"
 	"fmt"
@@ -14,11 +15,11 @@ import (
 )
 
 type context struct {
-	ApkBuild              *ApkBuild
-	GeneratedMelageConfig *GeneratedMelageConfig
-	ConfigFilename        string
-	OutDir                string
-	Client                *http.Client
+	ApkBuild               *ApkBuild
+	*GeneratedMelageConfig `yaml:"-"`
+	ConfigFilename         string
+	OutDir                 string
+	Client                 *http.Client
 }
 type ApkBuild struct {
 	PackageName    string   `yaml:"pkgname"`
@@ -26,7 +27,7 @@ type ApkBuild struct {
 	PackageRel     string   `yaml:"pkgrel"`
 	PackageDesc    string   `yaml:"pkgdesc"`
 	PackageUrl     string   `yaml:"url"`
-	Arch           string   `yaml:"arch"`
+	Arch           []string `yaml:"arch"`
 	License        string   `yaml:"license"`
 	DependDev      []string `yaml:"depends_dev"`
 	MakeDepends    []string `yaml:"makedepends"`
@@ -34,8 +35,11 @@ type ApkBuild struct {
 	Source         string   `yaml:"source"`
 }
 type GeneratedMelageConfig struct {
-	build.Configuration
-	generatedFromComment string `yaml:"#"`
+	Package              build.Package                 `yaml:"package"`
+	Environment          apko_types.ImageConfiguration `yaml:"environment,omitempty"`
+	Pipeline             []build.Pipeline              `yaml:"pipeline,omitempty"`
+	Subpackages          []build.Subpackage            `yaml:"subpackages,omitempty"`
+	generatedFromComment string                        `yaml:"#"`
 }
 
 func New(configFilename string) (context, error) {
@@ -109,7 +113,7 @@ func (c context) parseApkBuild(r io.Reader) error {
 			case "url":
 				c.ApkBuild.PackageUrl = value
 			case "arch":
-				c.ApkBuild.Arch = value
+				c.ApkBuild.Arch = strings.Split(value, " ")
 			case "license":
 				c.ApkBuild.License = value
 			case "depends_dev":
@@ -169,6 +173,35 @@ func (c context) buildFetchStep() error {
 
 func (c context) mapMelange() {
 
+	c.GeneratedMelageConfig.Package.Name = c.ApkBuild.PackageName
+	c.GeneratedMelageConfig.Package.Description = c.ApkBuild.PackageDesc
+	c.GeneratedMelageConfig.Package.Version = c.ApkBuild.PackageVersion
+	c.GeneratedMelageConfig.Package.TargetArchitecture = c.ApkBuild.Arch
+
+	copyright := build.Copyright{
+		Paths:       []string{"*"},
+		Attestation: "TODO",
+		License:     c.ApkBuild.License,
+	}
+	c.GeneratedMelageConfig.Package.Copyright = append(c.GeneratedMelageConfig.Package.Copyright, copyright)
+
+	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/configure"})
+	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make"})
+	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make-install"})
+
+	if len(c.ApkBuild.SubPackages) > 0 {
+		subpackage := build.Subpackage{
+			Name: c.ApkBuild.PackageName + "-dev",
+			Dependencies: build.Dependencies{
+				Runtime: []string{c.ApkBuild.PackageName},
+			},
+			Pipeline:    []build.Pipeline{{Uses: "split/dev"}},
+			Description: c.ApkBuild.PackageName + " headers",
+		}
+		c.GeneratedMelageConfig.Subpackages = append(c.GeneratedMelageConfig.Subpackages, subpackage)
+	}
+
+	c.GeneratedMelageConfig.generatedFromComment = fmt.Sprintf("generated from file %s", c.ConfigFilename)
 }
 
 func (c context) write() {

@@ -3,6 +3,7 @@ package convert
 import (
 	"chainguard.dev/melange/pkg/build"
 	"github.com/stretchr/testify/assert"
+	"gopkg.in/yaml.v3"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,7 +43,7 @@ func TestGetApkBuildFile(t *testing.T) {
 	assert.Equal(t, "1", context.ApkBuild.PackageRel)
 	assert.Equal(t, "X11 client-side library", context.ApkBuild.PackageDesc)
 	assert.Equal(t, "https://xorg.freedesktop.org/", context.ApkBuild.PackageUrl)
-	assert.Equal(t, "all", context.ApkBuild.Arch)
+	assert.Equal(t, []string{"all"}, context.ApkBuild.Arch)
 	assert.Equal(t, "custom:XFREE86", context.ApkBuild.License)
 	assert.Equal(t, "https://www.x.org/releases/individual/lib/libX11-$pkgver.tar.xz", context.ApkBuild.Source)
 	assert.Equal(t, []string{"$pkgname-static", "$pkgname-dev", "$pkgname-doc"}, context.ApkBuild.SubPackages)
@@ -116,6 +117,52 @@ func TestContext_getSourceSha(t *testing.T) {
 			assert.NoError(t, c.buildFetchStep())
 			assert.Equalf(t, pipeline, c.GeneratedMelageConfig.Pipeline[0], "expected sha incorrect")
 
+		})
+	}
+}
+
+func Test_context_mapMelange(t *testing.T) {
+
+	apkBuild := &ApkBuild{
+		PackageName:    "test_pkg",
+		PackageVersion: "1.2.3",
+		PackageRel:     "1",
+		PackageDesc:    "test package description",
+		PackageUrl:     "https://foo.com",
+		Arch:           []string{"all"},
+		License:        "MIT",
+	}
+
+	tests := []struct {
+		name        string
+		subPackages []string
+		apkBuild    *ApkBuild
+	}{
+		{
+			name: "no_sub_packages",
+		},
+		{
+			name:        "with_sub_packages",
+			subPackages: []string{"foo", "bar"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apkBuild.SubPackages = tt.subPackages
+			c := context{
+				ApkBuild:              apkBuild,
+				GeneratedMelageConfig: &GeneratedMelageConfig{},
+				ConfigFilename:        tt.name,
+			}
+			c.mapMelange()
+
+			expected, err := os.ReadFile(filepath.Join("testdata", tt.name+".yaml"))
+			assert.NoError(t, err)
+
+			actual, err := yaml.Marshal(&c.GeneratedMelageConfig)
+			assert.NoError(t, err)
+
+			assert.YAMLEqf(t, string(expected), string(actual), "generated melange yaml not the same as expected")
 		})
 	}
 }
