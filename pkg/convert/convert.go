@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"github.com/pkg/errors"
+	"golang.org/x/exp/slices"
 	"gopkg.in/yaml.v3"
 	"io"
 	"net/http"
@@ -295,5 +296,11 @@ func (c Context) buildEnvironment() {
 	env.Contents.Packages = append(env.Contents.Packages, c.ApkBuild.DependDev...)
 	env.Contents.Packages = append(env.Contents.Packages, c.ApkBuild.MakeDepends...)
 
+	for i, p := range env.Contents.Packages {
+		if p == "$depends_dev" {
+			env.Contents.Packages = slices.Delete(env.Contents.Packages, i, i+1)
+			break
+		}
+	}
 	c.Environment = env
 }
