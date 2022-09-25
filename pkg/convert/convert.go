@@ -17,11 +17,13 @@ import (
 	"strings"
 )
 
-type context struct {
+type Context struct {
 	ApkBuild               *ApkBuild
 	*GeneratedMelageConfig `yaml:"-"`
 	ConfigFilename         string
 	OutDir                 string
+	AdditionalRepositories []string
+	AdditionalKeyrings     []string
 	Client                 *http.Client
 }
 type ApkBuild struct {
@@ -45,8 +47,8 @@ type GeneratedMelageConfig struct {
 	generatedFromComment string                        `yaml:"#"`
 }
 
-func New(configFilename, outDir string) (context, error) {
-	context := context{}
+func New(configFilename, outDir string) (Context, error) {
+	context := Context{}
 
 	err := validate(configFilename)
 	if err != nil {
@@ -73,19 +75,25 @@ func validate(configFile string) error {
 	return nil
 }
 
-func (c context) Generate() error {
+func (c Context) Generate() error {
 
+	// get the contents of the APKBUILD file
 	err := c.getApkBuildFile()
 	if err != nil {
 		return errors.Wrap(err, "getting apk build file")
 	}
 
+	// automatically add a fetch step to the melange config to fetch the source
 	err = c.buildFetchStep()
 	if err != nil {
 		return errors.Wrap(err, "building fetch step")
 	}
 
+	// maps the APKBUILD values to melange config
 	c.mapMelange()
+
+	// builds the melange environment configuration
+	c.buildEnvironment()
 
 	err = c.write()
 	if err != nil {
@@ -95,7 +103,7 @@ func (c context) Generate() error {
 	return nil
 }
 
-func (c context) getApkBuildFile() error {
+func (c Context) getApkBuildFile() error {
 
 	resp, err := c.Client.Get(c.ConfigFilename)
 	if err != nil {
@@ -110,7 +118,7 @@ func (c context) getApkBuildFile() error {
 	return nil
 }
 
-func (c context) parseApkBuild(r io.Reader) error {
+func (c Context) parseApkBuild(r io.Reader) error {
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -155,7 +163,7 @@ func (c context) parseApkBuild(r io.Reader) error {
 	}
 	return nil
 }
-func (c context) buildFetchStep() error {
+func (c Context) buildFetchStep() error {
 	if c.ApkBuild.Source == "" {
 		return fmt.Errorf("no source URL")
 	}
@@ -197,7 +205,7 @@ func (c context) buildFetchStep() error {
 	return nil
 }
 
-func (c context) mapMelange() {
+func (c Context) mapMelange() {
 
 	c.GeneratedMelageConfig.Package.Name = c.ApkBuild.PackageName
 	c.GeneratedMelageConfig.Package.Description = c.ApkBuild.PackageDesc
@@ -230,7 +238,7 @@ func (c context) mapMelange() {
 	c.GeneratedMelageConfig.generatedFromComment = fmt.Sprintf("generated from file %s", c.ConfigFilename)
 }
 
-func (c context) write() error {
+func (c Context) write() error {
 
 	actual, err := yaml.Marshal(&c.GeneratedMelageConfig)
 	if err != nil {
@@ -254,4 +262,38 @@ func (c context) write() error {
 
 	_, err = f.WriteString(string(actual))
 	return err
+}
+
+func (c Context) buildEnvironment() {
+
+	env := apko_types.ImageConfiguration{
+		Contents: struct {
+			Repositories []string `yaml:"repositories"`
+			Keyring      []string `yaml:"keyring"`
+			Packages     []string `yaml:"packages"`
+		}{
+			Repositories: []string{
+				"https://packages.wolfi.dev/bootstrap/stage3",
+				"https://packages.wolfi.dev/os",
+			},
+			Keyring: []string{
+				"https://packages.wolfi.dev/bootstrap/stage3/wolfi-signing.rsa.pub",
+				"https://packages.wolfi.dev/os/wolfi-signing.rsa.pub",
+			},
+			Packages: []string{
+				"busybox",
+				"ca-certificates-bundle",
+				"build-base",
+				"automake",
+				"autoconf",
+			},
+		},
+	}
+	env.Contents.Repositories = append(env.Contents.Repositories, c.AdditionalRepositories...)
+	env.Contents.Keyring = append(env.Contents.Keyring, c.AdditionalKeyrings...)
+
+	env.Contents.Packages = append(env.Contents.Packages, c.ApkBuild.DependDev...)
+	env.Contents.Packages = append(env.Contents.Packages, c.ApkBuild.MakeDepends...)
+
+	c.Environment = env
 }

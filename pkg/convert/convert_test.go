@@ -96,8 +96,8 @@ func TestContext_getSourceSha(t *testing.T) {
 
 		}))
 
-		// initialise context with test values
-		c := context{
+		// initialise Context with test values
+		c := Context{
 			ApkBuild: &ApkBuild{
 				Source:         server.URL + "/" + tt.fields.TestUrl,
 				PackageVersion: tt.fields.PackageVersion,
@@ -149,7 +149,7 @@ func Test_context_mapMelange(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			apkBuild.SubPackages = tt.subPackages
-			c := context{
+			c := Context{
 				ApkBuild:              apkBuild,
 				GeneratedMelageConfig: &GeneratedMelageConfig{},
 				ConfigFilename:        tt.name,

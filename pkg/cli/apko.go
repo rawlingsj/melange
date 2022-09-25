@@ -24,10 +24,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type options struct {
+	outDir                 string
+	additionalRepositories []string
+	additionalKeyrings     []string
+}
+
 func ApkBuild() *cobra.Command {
-
-	var outDir string
-
+	o := &options{}
 	cmd := &cobra.Command{
 		Use:     "apkbuild",
 		Short:   "Converts an APKBUILD file into a melange.yaml",
@@ -40,7 +44,7 @@ func ApkBuild() *cobra.Command {
 				return errors.New("too many arguments, expected only 1")
 			}
 
-			return ApkBuildCmd(cmd.Context(), outDir, args[0])
+			return o.ApkBuildCmd(cmd.Context(), args[0])
 		},
 	}
 
@@ -48,16 +52,21 @@ func ApkBuild() *cobra.Command {
 	if err != nil {
 		cwd = "."
 	}
-	cmd.Flags().StringVar(&outDir, "out-dir", filepath.Join(cwd, "generated"), "directory where melange config will be output")
+	cmd.Flags().StringVar(&o.outDir, "out-dir", filepath.Join(cwd, "generated"), "directory where melange config will be output")
+	cmd.Flags().StringArrayVar(&o.additionalRepositories, "additional-repositories", []string{}, "additional repositories to be added to melange environment config")
+	cmd.Flags().StringArrayVar(&o.additionalKeyrings, "additional-keyrings", []string{}, "additional repositories to be added to melange environment config")
 
 	return cmd
 }
 
-func ApkBuildCmd(ctx context.Context, outDir, configFilename string) error {
-	context, err := convert.New(configFilename, outDir)
+func (o options) ApkBuildCmd(ctx context.Context, configFilename string) error {
+	context, err := convert.New(configFilename, o.outDir)
 	if err != nil {
 		return errors.Wrap(err, "initialising convert command")
 	}
+
+	context.AdditionalRepositories = o.additionalRepositories
+	context.AdditionalKeyrings = o.additionalKeyrings
 
 	err = context.Generate()
 	if err != nil {
