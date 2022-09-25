@@ -7,9 +7,12 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"github.com/pkg/errors"
+	"gopkg.in/yaml.v3"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -22,17 +25,17 @@ type context struct {
 	Client                 *http.Client
 }
 type ApkBuild struct {
-	PackageName    string   `yaml:"pkgname"`
-	PackageVersion string   `yaml:"pkgver"`
-	PackageRel     string   `yaml:"pkgrel"`
-	PackageDesc    string   `yaml:"pkgdesc"`
-	PackageUrl     string   `yaml:"url"`
-	Arch           []string `yaml:"arch"`
-	License        string   `yaml:"license"`
-	DependDev      []string `yaml:"depends_dev"`
-	MakeDepends    []string `yaml:"makedepends"`
-	SubPackages    []string `yaml:"subpackages"`
-	Source         string   `yaml:"source"`
+	PackageName    string
+	PackageVersion string
+	PackageRel     string
+	PackageDesc    string
+	PackageUrl     string
+	Arch           []string
+	License        string
+	DependDev      []string
+	MakeDepends    []string
+	SubPackages    []string
+	Source         string
 }
 type GeneratedMelageConfig struct {
 	Package              build.Package                 `yaml:"package"`
@@ -42,7 +45,7 @@ type GeneratedMelageConfig struct {
 	generatedFromComment string                        `yaml:"#"`
 }
 
-func New(configFilename string) (context, error) {
+func New(configFilename, outDir string) (context, error) {
 	context := context{}
 
 	err := validate(configFilename)
@@ -55,6 +58,7 @@ func New(configFilename string) (context, error) {
 	context.ApkBuild = &ApkBuild{}
 	context.GeneratedMelageConfig = &GeneratedMelageConfig{}
 
+	context.OutDir = outDir
 	return context, nil
 }
 
@@ -66,6 +70,28 @@ func validate(configFile string) error {
 	//if err != nil {
 	//	log.Fatal(err)
 	//}
+	return nil
+}
+
+func (c context) Generate() error {
+
+	err := c.getApkBuildFile()
+	if err != nil {
+		return errors.Wrap(err, "getting apk build file")
+	}
+
+	err = c.buildFetchStep()
+	if err != nil {
+		return errors.Wrap(err, "building fetch step")
+	}
+
+	c.mapMelange()
+
+	err = c.write()
+	if err != nil {
+		return errors.Wrap(err, "writing melange config file")
+	}
+
 	return nil
 }
 
@@ -93,7 +119,7 @@ func (c context) parseApkBuild(r io.Reader) error {
 		if line != "" && strings.Contains(line, "=") {
 			parts := strings.Split(line, "=")
 			if len(parts) != 2 {
-				return fmt.Errorf("too many parts found, expecting 2 found %v", len(parts))
+				return fmt.Errorf("too many parts found, expecting 2 found %v.  %s", len(parts), parts)
 			}
 
 			value, err := strconv.Unquote(parts[1])
@@ -204,10 +230,28 @@ func (c context) mapMelange() {
 	c.GeneratedMelageConfig.generatedFromComment = fmt.Sprintf("generated from file %s", c.ConfigFilename)
 }
 
-func (c context) write() {
+func (c context) write() error {
 
-}
+	actual, err := yaml.Marshal(&c.GeneratedMelageConfig)
+	if err != nil {
+		return errors.Wrapf(err, "marshalling melange configuration")
+	}
 
-func (c context) name() {
+	if _, err := os.Stat(c.OutDir); os.IsNotExist(err) {
+		err = os.MkdirAll(c.OutDir, os.ModePerm)
+		if err != nil {
+			return errors.Wrapf(err, "creating output directory %s", c.OutDir)
+		}
 
+	}
+
+	melangeFile := filepath.Join(c.OutDir, c.ApkBuild.PackageName+".yaml")
+	f, err := os.Create(melangeFile)
+	if err != nil {
+		return errors.Wrapf(err, "creating file %s", melangeFile)
+	}
+	defer f.Close()
+
+	_, err = f.WriteString(string(actual))
+	return err
 }

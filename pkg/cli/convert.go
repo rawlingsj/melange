@@ -16,21 +16,16 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
-	"sigs.k8s.io/release-utils/version"
 )
 
-func New() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:               "melange",
-		DisableAutoGenTag: true,
-		SilenceUsage:      true,
-	}
+func Convert() *cobra.Command {
 
-	cmd.AddCommand(Build())
-	cmd.AddCommand(Convert())
-	cmd.AddCommand(Keygen())
-	cmd.AddCommand(Index())
-	cmd.AddCommand(SignIndex())
-	cmd.AddCommand(version.Version())
+	cmd := &cobra.Command{
+		Use:   "convert",
+		Short: "Converts files into melange configuration files",
+		Long:  `Converts files into melange configuration files.`,
+	}
+	cmd.AddCommand(ApkBuild())
+
 	return cmd
 }

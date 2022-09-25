@@ -31,7 +31,7 @@ func TestGetApkBuildFile(t *testing.T) {
 	// Close the server when test finishes
 	defer server.Close()
 
-	context, err := New(server.URL + configFilename)
+	context, err := New(server.URL+configFilename, "")
 	assert.NoError(t, err)
 
 	context.Client = server.Client()
