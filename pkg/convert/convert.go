@@ -2,7 +2,7 @@ package convert
 
 import (
 	"bufio"
-	apko_types "chainguard.dev/apko/pkg/build/types"
+	apkotypes "chainguard.dev/apko/pkg/build/types"
 	"chainguard.dev/melange/pkg/build"
 	"crypto/sha256"
 	"fmt"
@@ -41,11 +41,11 @@ type ApkBuild struct {
 	Source         string
 }
 type GeneratedMelageConfig struct {
-	Package              build.Package                 `yaml:"package"`
-	Environment          apko_types.ImageConfiguration `yaml:"environment,omitempty"`
-	Pipeline             []build.Pipeline              `yaml:"pipeline,omitempty"`
-	Subpackages          []build.Subpackage            `yaml:"subpackages,omitempty"`
-	generatedFromComment string                        `yaml:"#"`
+	Package     build.Package                `yaml:"package"`
+	Environment apkotypes.ImageConfiguration `yaml:"environment,omitempty"`
+	Pipeline    []build.Pipeline             `yaml:"pipeline,omitempty"`
+	Subpackages []build.Subpackage           `yaml:"subpackages,omitempty"`
+	//GeneratedFromComment string                        `yaml:"#"` //todo figure out how to add unescaped comments
 }
 
 func New(configFilename, outDir string) (Context, error) {
@@ -177,7 +177,7 @@ func (c Context) buildFetchStep() error {
 		return errors.Wrapf(err, "parsing URI %s", source)
 	}
 
-	if !strings.HasSuffix(source, "tar.xz") && !strings.HasSuffix(source, "tar.gz") {
+	if !strings.HasSuffix(source, "tar.xz") && !strings.HasSuffix(source, "tar.gz") && !strings.HasSuffix(source, "bz2") {
 		return fmt.Errorf("only tar.xz and tar.gz currently supported")
 	}
 
@@ -197,7 +197,7 @@ func (c Context) buildFetchStep() error {
 	pipeline := build.Pipeline{
 		Uses: "fetch",
 		With: map[string]string{
-			"uri":             source,
+			"uri":             strings.ReplaceAll(source, c.ApkBuild.PackageVersion, "${{package.version}}"),
 			"expected-sha256": fmt.Sprintf("%x", expectedSha),
 		},
 	}
@@ -235,8 +235,8 @@ func (c Context) mapMelange() {
 		}
 		c.GeneratedMelageConfig.Subpackages = append(c.GeneratedMelageConfig.Subpackages, subpackage)
 	}
-
-	c.GeneratedMelageConfig.generatedFromComment = fmt.Sprintf("generated from file %s", c.ConfigFilename)
+	// todo add back once unescaped comments can be marshalled
+	//c.GeneratedMelageConfig.GeneratedFromComment = fmt.Sprintf("generated from file %s", c.ConfigFilename)
 }
 
 func (c Context) write() error {
@@ -267,7 +267,7 @@ func (c Context) write() error {
 
 func (c Context) buildEnvironment() {
 
-	env := apko_types.ImageConfiguration{
+	env := apkotypes.ImageConfiguration{
 		Contents: struct {
 			Repositories []string `yaml:"repositories"`
 			Keyring      []string `yaml:"keyring"`
@@ -293,8 +293,14 @@ func (c Context) buildEnvironment() {
 	env.Contents.Repositories = append(env.Contents.Repositories, c.AdditionalRepositories...)
 	env.Contents.Keyring = append(env.Contents.Keyring, c.AdditionalKeyrings...)
 
-	env.Contents.Packages = append(env.Contents.Packages, c.ApkBuild.DependDev...)
 	env.Contents.Packages = append(env.Contents.Packages, c.ApkBuild.MakeDepends...)
+
+	for _, d := range c.ApkBuild.DependDev {
+		if !strings.HasSuffix(d, "-dev") {
+			d = d + "-dev"
+		}
+		env.Contents.Packages = append(env.Contents.Packages, d)
+	}
 
 	for i, p := range env.Contents.Packages {
 		if p == "$depends_dev" {

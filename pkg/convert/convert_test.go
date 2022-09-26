@@ -79,6 +79,14 @@ func TestContext_getSourceSha(t *testing.T) {
 				ExpectedSha:    "cc2c52929ace57623ff517408a577e783e10042655963b2c8f0633e109337d7a",
 			},
 		},
+		{
+			name: "tar.bz2",
+			fields: fields{
+				TestUrl:        "cheese-$pkgver.tar.bz2",
+				PackageVersion: "7.8.9",
+				ExpectedSha:    "8452aa9c8cefc805c8930bc53394c7de15f43edc82dd86e619d794cd7f60b410",
+			},
+		},
 	}
 	for _, tt := range tests {
 		// read testdata file
@@ -109,7 +117,7 @@ func TestContext_getSourceSha(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 
 			with := map[string]string{
-				"uri":             server.URL + "/" + testFilename,
+				"uri":             server.URL + "/" + strings.ReplaceAll(testFilename, tt.fields.PackageVersion, "${{package.version}}"),
 				"expected-sha256": tt.fields.ExpectedSha,
 			}
 			pipeline := build.Pipeline{Uses: "fetch", With: with}
