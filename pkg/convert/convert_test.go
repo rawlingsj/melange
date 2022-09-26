@@ -1,9 +1,11 @@
 package convert
 
 import (
+	"bytes"
 	"chainguard.dev/melange/pkg/build"
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -150,8 +152,12 @@ func Test_context_mapMelange(t *testing.T) {
 			name: "no_sub_packages",
 		},
 		{
-			name:        "with_sub_packages",
-			subPackages: []string{"foo", "bar"},
+			name:        "with_unrecognised_sub_packages",
+			subPackages: []string{"foo"},
+		},
+		{
+			name:        "with_multi_sub_packages",
+			subPackages: []string{"test_pkg-doc", "test_pkg-dev"},
 		},
 	}
 	for _, tt := range tests {
@@ -173,4 +179,18 @@ func Test_context_mapMelange(t *testing.T) {
 			assert.YAMLEqf(t, string(expected), string(actual), "generated melange yaml not the same as expected")
 		})
 	}
+}
+
+func TestScannerError(t *testing.T) {
+
+	data, err := os.ReadFile(filepath.Join("testdata", "scanner_error.yaml"))
+	assert.NoError(t, err)
+	c := Context{
+		ApkBuild:       &ApkBuild{},
+		ConfigFilename: "https://git.alpinelinux.org/aports/plain/main/libxext/APKBUILD",
+		Logger:         log.New(log.Writer(), "unittest: ", log.LstdFlags|log.Lmsgprefix),
+	}
+
+	c.parseApkBuild(bytes.NewReader(data))
+	assert.Equal(t, "https://www.x.org/releases/individual/lib/libXext-$pkgver.tar.bz2", c.ApkBuild.Source)
 }

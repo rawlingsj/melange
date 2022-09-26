@@ -100,7 +100,7 @@ type Subpackage struct {
 	Dependencies Dependencies  `yaml:"dependencies,omitempty"`
 	Options      PackageOption `yaml:"packageOption,omitempty"`
 	Scriptlets   Scriptlets    `yaml:"scriptlets,omitempty"`
-	Description  string        `yaml:"description"`
+	Description  string        `yaml:"description,omitempty"`
 }
 
 type Input struct {

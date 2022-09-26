@@ -14,10 +14,14 @@ pipeline:
   - uses: autoconf/make
   - uses: autoconf/make-install
 subpackages:
+  - name: test_pkg-doc
+    pipeline:
+      - uses: split/manpages
+    description: test_pkg manpages
   - name: test_pkg-dev
     pipeline:
       - uses: split/dev
     dependencies:
       runtime:
         - test_pkg
-    description: test_pkg headers
+    description: test_pkg dev

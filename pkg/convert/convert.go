@@ -10,11 +10,11 @@ import (
 	"golang.org/x/exp/slices"
 	"gopkg.in/yaml.v3"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -26,6 +26,7 @@ type Context struct {
 	AdditionalRepositories []string
 	AdditionalKeyrings     []string
 	Client                 *http.Client
+	Logger                 *log.Logger
 }
 type ApkBuild struct {
 	PackageName    string
@@ -49,7 +50,9 @@ type GeneratedMelageConfig struct {
 }
 
 func New(configFilename, outDir string) (Context, error) {
-	context := Context{}
+	context := Context{
+		Logger: log.New(log.Writer(), "melange: ", log.LstdFlags|log.Lmsgprefix),
+	}
 
 	err := validate(configFilename)
 	if err != nil {
@@ -62,6 +65,7 @@ func New(configFilename, outDir string) (Context, error) {
 	context.GeneratedMelageConfig = &GeneratedMelageConfig{}
 
 	context.OutDir = outDir
+
 	return context, nil
 }
 
@@ -80,6 +84,12 @@ func (c Context) Generate() error {
 
 	// get the contents of the APKBUILD file
 	err := c.getApkBuildFile()
+	if err != nil {
+		return errors.Wrap(err, "getting apk build file")
+	}
+
+	// generate any dependencies first
+	err = c.generateDependencies()
 	if err != nil {
 		return errors.Wrap(err, "getting apk build file")
 	}
@@ -121,20 +131,23 @@ func (c Context) getApkBuildFile() error {
 
 func (c Context) parseApkBuild(r io.Reader) error {
 
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	// turn into byte array else scanner skips lines
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return errors.Wrapf(err, "reading APKBUILD file")
+	}
 
+	scanner := bufio.NewScanner(strings.NewReader(string(b)))
+	scanned := false
+	for scanner.Scan() {
+		scanned = true
+		line := strings.TrimSpace(scanner.Text())
 		if line != "" && strings.Contains(line, "=") {
 			parts := strings.Split(line, "=")
-			if len(parts) != 2 {
-				return fmt.Errorf("too many parts found, expecting 2 found %v.  %s", len(parts), parts)
-			}
 
-			value, err := strconv.Unquote(parts[1])
-			if err != nil {
-				value = parts[1]
-			}
+			value := strings.ReplaceAll(parts[1], "\"", "")
+			value = strings.TrimSpace(value)
+
 			switch parts[0] {
 
 			case "pkgname":
@@ -162,11 +175,14 @@ func (c Context) parseApkBuild(r io.Reader) error {
 			}
 		}
 	}
+	if !scanned {
+		return fmt.Errorf("not scanned file %s", c.ConfigFilename)
+	}
 	return nil
 }
 func (c Context) buildFetchStep() error {
 	if c.ApkBuild.Source == "" {
-		return fmt.Errorf("no source URL")
+		return fmt.Errorf("no source URL for APKBUILD %s pknname %s", c.ConfigFilename, c.ApkBuild.PackageName)
 	}
 	if c.ApkBuild.PackageVersion == "" {
 		return fmt.Errorf("no package version")
@@ -224,17 +240,41 @@ func (c Context) mapMelange() {
 	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make"})
 	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make-install"})
 
-	if len(c.ApkBuild.SubPackages) > 0 {
+	for _, subPackage := range c.ApkBuild.SubPackages {
 		subpackage := build.Subpackage{
-			Name: c.ApkBuild.PackageName + "-dev",
-			Dependencies: build.Dependencies{
-				Runtime: []string{c.ApkBuild.PackageName},
-			},
-			Pipeline:    []build.Pipeline{{Uses: "split/dev"}},
-			Description: c.ApkBuild.PackageName + " headers",
+			Name: strings.Replace(subPackage, "$pkgname", c.ApkBuild.PackageName, 1),
 		}
+
+		// generate subpackages based on the subpackages defined in the APKBUILD
+		var ext string
+		parts := strings.Split(subPackage, "-")
+		if len(parts) == 2 {
+			switch parts[1] {
+			case "doc":
+				ext = "manpages"
+			case "dev":
+				ext = "dev"
+				subpackage.Dependencies = build.Dependencies{
+					Runtime: []string{c.ApkBuild.PackageName},
+				}
+			case "locales":
+				ext = "dev"
+			default:
+				// if we don't recognise the extension make it obvious user needs to manually fix the config
+				ext = "FIXME"
+			}
+
+			subpackage.Pipeline = []build.Pipeline{{Uses: "split/" + ext}}
+			subpackage.Description = c.ApkBuild.PackageName + " " + ext
+
+		} else {
+			// if we don't recognise the extension make it obvious user needs to manually fix the config
+			subpackage.Pipeline = []build.Pipeline{{Runs: "FIXME"}}
+		}
+
 		c.GeneratedMelageConfig.Subpackages = append(c.GeneratedMelageConfig.Subpackages, subpackage)
 	}
+
 	// todo add back once unescaped comments can be marshalled
 	//c.GeneratedMelageConfig.GeneratedFromComment = fmt.Sprintf("generated from file %s", c.ConfigFilename)
 }
@@ -290,6 +330,7 @@ func (c Context) buildEnvironment() {
 			},
 		},
 	}
+	c.Logger.Printf("addition %s", c.AdditionalRepositories)
 	env.Contents.Repositories = append(env.Contents.Repositories, c.AdditionalRepositories...)
 	env.Contents.Keyring = append(env.Contents.Keyring, c.AdditionalKeyrings...)
 
@@ -309,4 +350,33 @@ func (c Context) buildEnvironment() {
 		}
 	}
 	c.Environment = env
+}
+
+func (c Context) generateDependencies() error {
+	for _, d := range c.ApkBuild.MakeDepends {
+		c.foo(d)
+	}
+	for _, d := range c.ApkBuild.DependDev {
+		c.foo(d)
+	}
+	return nil
+}
+
+func (c Context) foo(d string) {
+
+	if d != "$depends_dev" {
+		d = strings.TrimSuffix(d, "-dev")
+		dependencyApkBuild := strings.ReplaceAll(c.ConfigFilename, c.ApkBuild.PackageName, d)
+
+		gc, err := New(dependencyApkBuild, c.OutDir)
+		if err != nil {
+			c.Logger.Printf("failed: " + err.Error())
+		}
+		gc.AdditionalRepositories = append(gc.AdditionalRepositories, c.AdditionalRepositories...)
+		gc.AdditionalKeyrings = append(gc.AdditionalKeyrings, c.AdditionalKeyrings...)
+		err = gc.Generate()
+		if err != nil {
+			c.Logger.Printf("failed to generate: " + err.Error())
+		}
+	}
 }
