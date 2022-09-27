@@ -76,12 +76,6 @@ func (c Context) Generate(apkBuildURI string) error {
 		return errors.Wrap(err, "getting apk build file")
 	}
 
-	// generate any dependencies first
-	//err = c.generateDependencies()
-	if err != nil {
-		return errors.Wrap(err, "getting apk build file")
-	}
-
 	// build map of dependencies
 	err = c.buildMapOfDependencies(apkBuildURI)
 	if err != nil {
@@ -97,7 +91,8 @@ func (c Context) Generate(apkBuildURI string) error {
 		// automatically add a fetch step to the melange config to fetch the source
 		err = c.buildFetchStep(apkConverter)
 		if err != nil {
-			return errors.Wrap(err, "building fetch step")
+			// lets not error if we can't automatically add the fetch step
+			c.Logger.Printf("skipping fetch step for %s", err.Error())
 		}
 
 		// maps the APKBUILD values to melange config
@@ -136,6 +131,7 @@ func (c Context) getApkBuildFile(apkFilename string) error {
 	return nil
 }
 
+// perform a basic parse of an APKBUILD file
 func (c Context) parseApkBuild(r io.Reader, key string) error {
 
 	c.ApkConvertors[key] = ApkConvertor{
@@ -193,6 +189,7 @@ func (c Context) parseApkBuild(r io.Reader, key string) error {
 	return nil
 }
 
+// adds a pipeline fetch step along with expected sha, to clone the package source
 func (c Context) buildFetchStep(converter ApkConvertor) error {
 
 	apkBuild := converter.ApkBuild
@@ -205,13 +202,19 @@ func (c Context) buildFetchStep(converter ApkConvertor) error {
 		return fmt.Errorf("no package version")
 	}
 	source := strings.ReplaceAll(apkBuild.Source, "$pkgver", apkBuild.PackageVersion)
+	source = strings.ReplaceAll(source, "${pkgver%.*}", apkBuild.PackageVersion)
+	source = strings.ReplaceAll(source, "$_pkgver", apkBuild.PackageVersion)
+	source = strings.ReplaceAll(source, "$pkgname", apkBuild.PackageName)
+	source = strings.ReplaceAll(source, "$_pkgname", apkBuild.PackageName)
+
 	_, err := url.ParseRequestURI(source)
 	if err != nil {
 		return errors.Wrapf(err, "parsing URI %s", source)
 	}
 
-	if !strings.HasSuffix(source, "tar.xz") && !strings.HasSuffix(source, "tar.gz") && !strings.HasSuffix(source, "bz2") && !strings.HasSuffix(source, "zip") {
-		return fmt.Errorf("only tar.xz and tar.gz currently supported")
+	// todo make this cleaner
+	if !strings.HasSuffix(source, "tar.xz") && !strings.HasSuffix(source, "tar.gz") && !strings.HasSuffix(source, "bz2") && !strings.HasSuffix(source, "zip") && !strings.HasSuffix(source, "tgz") {
+		return fmt.Errorf("only tar.xz, tar.gz, bz2, tgz and zip files currently supported, got %s", source)
 	}
 
 	req, _ := http.NewRequest("GET", source, nil)
@@ -222,22 +225,28 @@ func (c Context) buildFetchStep(converter ApkConvertor) error {
 	}
 	defer resp.Body.Close()
 
+	failed := false
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("non ok http response code: %v", resp.StatusCode)
+		c.Logger.Printf("non ok http response for URI %s code: %v", source, resp.StatusCode)
+		failed = true
 	}
 
-	h := sha256.New()
-	if _, err := io.Copy(h, resp.Body); err != nil {
-		return errors.Wrapf(err, "generating sha265 for %s", source)
+	var expectedSha string
+	if !failed {
+		h := sha256.New()
+		if _, err := io.Copy(h, resp.Body); err != nil {
+			return errors.Wrapf(err, "generating sha265 for %s", source)
+		}
+		expectedSha = fmt.Sprintf("%x", h.Sum(nil))
+	} else {
+		expectedSha = "FIXME - SOURCE URL NOT VALID"
 	}
-
-	expectedSha := h.Sum(nil)
 
 	pipeline := build.Pipeline{
 		Uses: "fetch",
 		With: map[string]string{
 			"uri":             strings.ReplaceAll(source, apkBuild.PackageVersion, "${{package.version}}"),
-			"expected-sha256": fmt.Sprintf("%x", expectedSha),
+			"expected-sha256": expectedSha,
 		},
 	}
 	converter.GeneratedMelageConfig.Pipeline = append(converter.GeneratedMelageConfig.Pipeline, pipeline)
@@ -245,6 +254,7 @@ func (c Context) buildFetchStep(converter ApkConvertor) error {
 	return nil
 }
 
+// maps APKBUILD values to melange
 func (c ApkConvertor) mapMelange() {
 
 	c.GeneratedMelageConfig.Package.Name = c.ApkBuild.PackageName
@@ -329,6 +339,7 @@ func (c ApkConvertor) write(outdir string) error {
 	return err
 }
 
+// adds a melange environment section
 func (c ApkConvertor) buildEnvironment() {
 
 	env := apkotypes.ImageConfiguration{
@@ -375,38 +386,6 @@ func (c ApkConvertor) buildEnvironment() {
 	c.Environment = env
 }
 
-//
-//func (c Context) generateDependencies() error {
-//	for _, d := range c.ApkBuild.MakeDepends {
-//		c.foo(d)
-//	}
-//	for _, d := range c.ApkBuild.DependDev {
-//		c.foo(d)
-//	}
-//	return nil
-//}
-//
-//func (c Context) foo(d string) {
-//
-//	if d != "$depends_dev" {
-//		d = strings.TrimSuffix(d, "-dev")
-//		dependencyApkBuild := strings.ReplaceAll(c.ConfigFilename, c.ApkBuild.PackageName, d)
-//
-//		gc, err := New(dependencyApkBuild, c.OutDir)
-//		if err != nil {
-//			c.Logger.Printf("failed: " + err.Error())
-//		}
-//		gc.AdditionalRepositories = append(gc.AdditionalRepositories, c.AdditionalRepositories...)
-//		gc.AdditionalKeyrings = append(gc.AdditionalKeyrings, c.AdditionalKeyrings...)
-//		gc.Client = c.Client
-//
-//		err = gc.Generate()
-//		if err != nil {
-//			c.Logger.Printf("failed to generate: " + err.Error())
-//		}
-//	}
-//}
-
 // gather deps, add to map, loop deps, fetch their deps, add to map
 func (c Context) buildMapOfDependencies(apkBuildURI string) error {
 
@@ -428,6 +407,15 @@ func (c Context) buildMapOfDependencies(apkBuildURI string) error {
 
 	// recursively loop round and add any missing dependencies to the map
 	for _, dep := range deps {
+
+		if strings.TrimSpace(dep) == "" {
+			continue
+		}
+
+		// remove -dev from dependency name when looking up matching APKBUILD
+		dep = strings.TrimSuffix(dep, "-dev")
+
+		c.Logger.Printf("looking at %s", dep)
 		// using the same base URI switch the existing package name for the dependency and get related APKBUILD
 		dependencyApkBuildURI := strings.ReplaceAll(apkBuildURI, convertor.ApkBuild.PackageName, dep)
 
