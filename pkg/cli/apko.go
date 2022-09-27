@@ -60,15 +60,16 @@ func ApkBuild() *cobra.Command {
 }
 
 func (o options) ApkBuildCmd(ctx context.Context, configFilename string) error {
-	context, err := convert.New(configFilename, o.outDir)
+	context, err := convert.New()
 	if err != nil {
 		return errors.Wrap(err, "initialising convert command")
 	}
 
 	context.AdditionalRepositories = o.additionalRepositories
 	context.AdditionalKeyrings = o.additionalKeyrings
+	context.OutDir = o.outDir
 
-	err = context.Generate()
+	err = context.Generate(configFilename)
 	if err != nil {
 		return errors.Wrap(err, "generating melange configuration")
 	}

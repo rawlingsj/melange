@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"chainguard.dev/melange/pkg/build"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/time/rate"
 	"gopkg.in/yaml.v3"
 	"log"
 	"net/http"
@@ -12,7 +13,77 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestGetApkDependencies(t *testing.T) {
+
+	deps, err := os.ReadDir(filepath.Join("testdata", "deps"))
+	assert.NoError(t, err)
+	assert.NotEmpty(t, deps)
+
+	var filenames []string
+	for _, dep := range deps {
+		filenames = append(filenames, "/"+dep.Name())
+	}
+
+	// Start a local HTTP server
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+
+		// assert requests dependency is in the list of test files
+		assert.True(t, contains(filenames, req.URL.String()), "requests file does not match any test files")
+
+		// send response to be tested
+		data, err := os.ReadFile(filepath.Join("testdata", "deps", "/"+req.URL.String()))
+		assert.NoError(t, err)
+		assert.NotEmpty(t, data)
+		_, err = rw.Write(data)
+		assert.NoError(t, err)
+	}))
+
+	// Close the server when test finishes
+	defer server.Close()
+
+	context := Context{
+		ApkConvertors: make(map[string]ApkConvertor),
+		Client: &RLHTTPClient{
+			client: server.Client(),
+
+			// for unit tests we don't need to rate limit requests
+			Ratelimiter: rate.NewLimiter(rate.Every(1*time.Second), 20), // 10 request every 10 seconds
+		},
+		Logger: log.New(log.Writer(), "test: ", log.LstdFlags|log.Lmsgprefix),
+		OutDir: t.TempDir(),
+	}
+
+	// the top level APKBUILD is cheese
+	err = context.Generate(server.URL + "/" + "cheese")
+	assert.NoError(t, err)
+
+	// assert all dependencies were found
+	_, exists := context.ApkConvertors[server.URL+"/bar"]
+	assert.True(t, exists, "/bar not found")
+	_, exists = context.ApkConvertors[server.URL+"/beer"]
+	assert.True(t, exists, "/beer not found")
+	_, exists = context.ApkConvertors[server.URL+"/cheese"]
+	assert.True(t, exists, "/cheese not found")
+	_, exists = context.ApkConvertors[server.URL+"/crisps"]
+	assert.True(t, exists, "/crisps not found")
+	_, exists = context.ApkConvertors[server.URL+"/foo"]
+	assert.True(t, exists, "/foo not found")
+	_, exists = context.ApkConvertors[server.URL+"/wine"]
+	assert.True(t, exists, "/wine not found")
+
+}
+
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
 
 func TestGetApkBuildFile(t *testing.T) {
 	configFilename := "/aports/tree/main/util-macros/APKBUILD"
@@ -33,24 +104,27 @@ func TestGetApkBuildFile(t *testing.T) {
 	// Close the server when test finishes
 	defer server.Close()
 
-	context, err := New(server.URL+configFilename, "")
+	context, err := New()
 	assert.NoError(t, err)
 
-	context.Client = server.Client()
-	err = context.getApkBuildFile()
+	context.Client.client = server.Client()
+	err = context.getApkBuildFile(server.URL + configFilename)
 	assert.NoError(t, err)
 
-	assert.Equal(t, "libx11", context.ApkBuild.PackageName)
-	assert.Equal(t, "1.8.1", context.ApkBuild.PackageVersion)
-	assert.Equal(t, "1", context.ApkBuild.PackageRel)
-	assert.Equal(t, "X11 client-side library", context.ApkBuild.PackageDesc)
-	assert.Equal(t, "https://xorg.freedesktop.org/", context.ApkBuild.PackageUrl)
-	assert.Equal(t, []string{"all"}, context.ApkBuild.Arch)
-	assert.Equal(t, "custom:XFREE86", context.ApkBuild.License)
-	assert.Equal(t, "https://www.x.org/releases/individual/lib/libX11-$pkgver.tar.xz", context.ApkBuild.Source)
-	assert.Equal(t, []string{"$pkgname-static", "$pkgname-dev", "$pkgname-doc"}, context.ApkBuild.SubPackages)
-	assert.Equal(t, []string{"libxcb-dev", "xtrans"}, context.ApkBuild.DependDev)
-	assert.Equal(t, []string{"$depends_dev", "xorgproto", "util-macros", "xmlto"}, context.ApkBuild.MakeDepends)
+	assert.Equal(t, 1, len(context.ApkConvertors), "apk converter not found")
+
+	apkbuild := context.ApkConvertors[server.URL+configFilename].ApkBuild
+	assert.Equal(t, "libx11", apkbuild.PackageName)
+	assert.Equal(t, "1.8.1", apkbuild.PackageVersion)
+	assert.Equal(t, "1", apkbuild.PackageRel)
+	assert.Equal(t, "X11 client-side library", apkbuild.PackageDesc)
+	assert.Equal(t, "https://xorg.freedesktop.org/", apkbuild.PackageUrl)
+	assert.Equal(t, []string{"all"}, apkbuild.Arch)
+	assert.Equal(t, "custom:XFREE86", apkbuild.License)
+	assert.Equal(t, "https://www.x.org/releases/individual/lib/libX11-$pkgver.tar.xz", apkbuild.Source)
+	assert.Equal(t, []string{"$pkgname-static", "$pkgname-dev", "$pkgname-doc"}, apkbuild.SubPackages)
+	assert.Equal(t, []string{"libxcb-dev", "xtrans"}, apkbuild.DependDev)
+	assert.Equal(t, []string{"$depends_dev", "xorgproto", "util-macros", "xmlto"}, apkbuild.MakeDepends)
 
 }
 
@@ -108,11 +182,18 @@ func TestContext_getSourceSha(t *testing.T) {
 
 		// initialise Context with test values
 		c := Context{
+			ApkConvertors: map[string]ApkConvertor{},
+
+			Client: &RLHTTPClient{
+				client:      server.Client(),
+				Ratelimiter: rate.NewLimiter(rate.Every(1*time.Second), 20), // 10 request every 10 seconds
+			},
+		}
+		c.ApkConvertors[tt.name] = ApkConvertor{
 			ApkBuild: &ApkBuild{
 				Source:         server.URL + "/" + tt.fields.TestUrl,
 				PackageVersion: tt.fields.PackageVersion,
 			},
-			Client:                server.Client(),
 			GeneratedMelageConfig: &GeneratedMelageConfig{},
 		}
 
@@ -124,13 +205,12 @@ func TestContext_getSourceSha(t *testing.T) {
 			}
 			pipeline := build.Pipeline{Uses: "fetch", With: with}
 
-			assert.NoError(t, c.buildFetchStep())
-			assert.Equalf(t, pipeline, c.GeneratedMelageConfig.Pipeline[0], "expected sha incorrect")
+			assert.NoError(t, c.buildFetchStep(c.ApkConvertors[tt.name]))
+			assert.Equalf(t, pipeline, c.ApkConvertors[tt.name].GeneratedMelageConfig.Pipeline[0], "expected sha incorrect")
 
 		})
 	}
 }
-
 func Test_context_mapMelange(t *testing.T) {
 
 	apkBuild := &ApkBuild{
@@ -164,33 +244,40 @@ func Test_context_mapMelange(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			apkBuild.SubPackages = tt.subPackages
 			c := Context{
+				ApkConvertors: map[string]ApkConvertor{},
+			}
+			c.ApkConvertors[tt.name] = ApkConvertor{
 				ApkBuild:              apkBuild,
 				GeneratedMelageConfig: &GeneratedMelageConfig{},
-				ConfigFilename:        tt.name,
 			}
-			c.mapMelange()
+			c.ApkConvertors[tt.name].mapMelange()
 
 			expected, err := os.ReadFile(filepath.Join("testdata", tt.name+".yaml"))
 			assert.NoError(t, err)
 
-			actual, err := yaml.Marshal(&c.GeneratedMelageConfig)
+			config := c.ApkConvertors[tt.name].GeneratedMelageConfig
+			actual, err := yaml.Marshal(&config)
+
 			assert.NoError(t, err)
 
 			assert.YAMLEqf(t, string(expected), string(actual), "generated melange yaml not the same as expected")
 		})
 	}
 }
-
 func TestScannerError(t *testing.T) {
 
 	data, err := os.ReadFile(filepath.Join("testdata", "scanner_error.yaml"))
 	assert.NoError(t, err)
 	c := Context{
-		ApkBuild:       &ApkBuild{},
-		ConfigFilename: "https://git.alpinelinux.org/aports/plain/main/libxext/APKBUILD",
-		Logger:         log.New(log.Writer(), "unittest: ", log.LstdFlags|log.Lmsgprefix),
+		ApkConvertors: map[string]ApkConvertor{},
+		Logger:        log.New(log.Writer(), "unittest: ", log.LstdFlags|log.Lmsgprefix),
+	}
+	key := "https://git.alpinelinux.org/aports/plain/main/libxext/APKBUILD"
+	c.ApkConvertors[key] = ApkConvertor{
+		ApkBuild: &ApkBuild{},
 	}
 
-	c.parseApkBuild(bytes.NewReader(data))
-	assert.Equal(t, "https://www.x.org/releases/individual/lib/libXext-$pkgver.tar.bz2", c.ApkBuild.Source)
+	c.parseApkBuild(bytes.NewReader(data), key)
+	assert.NoError(t, err)
+	assert.Equal(t, "https://www.x.org/releases/individual/lib/libXext-$pkgver.tar.bz2", c.ApkConvertors[key].ApkBuild.Source)
 }

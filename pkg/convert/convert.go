@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/pkg/errors"
 	"golang.org/x/exp/slices"
+	"golang.org/x/time/rate"
 	"gopkg.in/yaml.v3"
 	"io"
 	"log"
@@ -16,17 +17,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type Context struct {
-	ApkBuild               *ApkBuild
-	*GeneratedMelageConfig `yaml:"-"`
-	ConfigFilename         string
+	ApkConvertors          map[string]ApkConvertor
 	OutDir                 string
 	AdditionalRepositories []string
 	AdditionalKeyrings     []string
-	Client                 *http.Client
+	Client                 *RLHTTPClient
 	Logger                 *log.Logger
+}
+type ApkConvertor struct {
+	*ApkBuild
+	ApkBuildRaw            []byte
+	*GeneratedMelageConfig `yaml:"-"`
+	ConfigFilename         string
 }
 type ApkBuild struct {
 	PackageName    string
@@ -49,87 +55,95 @@ type GeneratedMelageConfig struct {
 	//GeneratedFromComment string                        `yaml:"#"` //todo figure out how to add unescaped comments
 }
 
-func New(configFilename, outDir string) (Context, error) {
+func New() (Context, error) {
 	context := Context{
+		ApkConvertors: map[string]ApkConvertor{},
+		Client: &RLHTTPClient{
+			client:      http.DefaultClient,
+			Ratelimiter: rate.NewLimiter(rate.Every(1*time.Second), 1), // 10 request every 10 seconds
+		},
 		Logger: log.New(log.Writer(), "melange: ", log.LstdFlags|log.Lmsgprefix),
 	}
-
-	err := validate(configFilename)
-	if err != nil {
-		return context, errors.Wrapf(err, "failed to validate config filename")
-	}
-	context.ConfigFilename = configFilename
-
-	context.Client = &http.Client{}
-	context.ApkBuild = &ApkBuild{}
-	context.GeneratedMelageConfig = &GeneratedMelageConfig{}
-
-	context.OutDir = outDir
 
 	return context, nil
 }
 
-func validate(configFile string) error {
-	//todo validate file
-
-	// Build fileName from fullPath
-	//fileURL, err := url.Parse(fullURLFile)
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-	return nil
-}
-
-func (c Context) Generate() error {
+func (c Context) Generate(apkBuildURI string) error {
 
 	// get the contents of the APKBUILD file
-	err := c.getApkBuildFile()
+	err := c.getApkBuildFile(apkBuildURI)
 	if err != nil {
 		return errors.Wrap(err, "getting apk build file")
 	}
 
 	// generate any dependencies first
-	err = c.generateDependencies()
+	//err = c.generateDependencies()
 	if err != nil {
 		return errors.Wrap(err, "getting apk build file")
 	}
 
-	// automatically add a fetch step to the melange config to fetch the source
-	err = c.buildFetchStep()
+	// build map of dependencies
+	err = c.buildMapOfDependencies(apkBuildURI)
 	if err != nil {
-		return errors.Wrap(err, "building fetch step")
+		return errors.Wrap(err, "building map of dependencies")
 	}
 
-	// maps the APKBUILD values to melange config
-	c.mapMelange()
+	// todo reverse map order so we generate lowest transitive dependency first
+	// this will help to build melange config in the right order
 
-	// builds the melange environment configuration
-	c.buildEnvironment()
+	// loop over map and generate melange config for each
+	for _, apkConverter := range c.ApkConvertors {
 
-	err = c.write()
-	if err != nil {
-		return errors.Wrap(err, "writing melange config file")
+		// automatically add a fetch step to the melange config to fetch the source
+		err = c.buildFetchStep(apkConverter)
+		if err != nil {
+			return errors.Wrap(err, "building fetch step")
+		}
+
+		// maps the APKBUILD values to melange config
+		apkConverter.mapMelange()
+
+		// builds the melange environment configuration
+		apkConverter.buildEnvironment()
+
+		err = apkConverter.write(c.OutDir)
+		if err != nil {
+			return errors.Wrap(err, "writing melange config file")
+		}
 	}
 
 	return nil
 }
 
-func (c Context) getApkBuildFile() error {
+func (c Context) getApkBuildFile(apkFilename string) error {
 
-	resp, err := c.Client.Get(c.ConfigFilename)
+	req, _ := http.NewRequest("GET", apkFilename, nil)
+	resp, err := c.Client.Do(req)
+
 	if err != nil {
-		return errors.Wrapf(err, "getting %s", c.ConfigFilename)
+		return errors.Wrapf(err, "getting %s", apkFilename)
 	}
 	defer resp.Body.Close()
 
-	err = c.parseApkBuild(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("non ok http response code: %v", resp.StatusCode)
+	}
+
+	err = c.parseApkBuild(resp.Body, apkFilename)
 	if err != nil {
-		return errors.Wrapf(err, "failed to parse apkbuild %s", c.ConfigFilename)
+		return errors.Wrapf(err, "failed to parse apkbuild %s", apkFilename)
 	}
 	return nil
 }
 
-func (c Context) parseApkBuild(r io.Reader) error {
+func (c Context) parseApkBuild(r io.Reader, key string) error {
+
+	c.ApkConvertors[key] = ApkConvertor{
+		ApkBuild:              &ApkBuild{},
+		GeneratedMelageConfig: &GeneratedMelageConfig{},
+	}
+
+	apkbuild := c.ApkConvertors[key].ApkBuild
 
 	// turn into byte array else scanner skips lines
 	b, err := io.ReadAll(r)
@@ -138,9 +152,9 @@ func (c Context) parseApkBuild(r io.Reader) error {
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(string(b)))
-	scanned := false
+
 	for scanner.Scan() {
-		scanned = true
+
 		line := strings.TrimSpace(scanner.Text())
 		if line != "" && strings.Contains(line, "=") {
 			parts := strings.Split(line, "=")
@@ -151,61 +165,70 @@ func (c Context) parseApkBuild(r io.Reader) error {
 			switch parts[0] {
 
 			case "pkgname":
-				c.ApkBuild.PackageName = value
+				apkbuild.PackageName = value
 			case "pkgver":
-				c.ApkBuild.PackageVersion = value
+				apkbuild.PackageVersion = value
 			case "pkgrel":
-				c.ApkBuild.PackageRel = value
+				apkbuild.PackageRel = value
 			case "pkgdesc":
-				c.ApkBuild.PackageDesc = value
+				apkbuild.PackageDesc = value
 			case "url":
-				c.ApkBuild.PackageUrl = value
+				apkbuild.PackageUrl = value
 			case "arch":
-				c.ApkBuild.Arch = strings.Split(value, " ")
+				apkbuild.Arch = strings.Split(value, " ")
 			case "license":
-				c.ApkBuild.License = value
+				apkbuild.License = value
 			case "depends_dev":
-				c.ApkBuild.DependDev = strings.Split(value, " ")
+				apkbuild.DependDev = strings.Split(value, " ")
 			case "subpackages":
-				c.ApkBuild.SubPackages = strings.Split(value, " ")
+				apkbuild.SubPackages = strings.Split(value, " ")
 			case "makedepends":
-				c.ApkBuild.MakeDepends = strings.Split(value, " ")
+				apkbuild.MakeDepends = strings.Split(value, " ")
 			case "source":
-				c.ApkBuild.Source = value
+				apkbuild.Source = value
 			}
 		}
 	}
-	if !scanned {
-		return fmt.Errorf("not scanned file %s", c.ConfigFilename)
-	}
+
 	return nil
 }
-func (c Context) buildFetchStep() error {
-	if c.ApkBuild.Source == "" {
-		return fmt.Errorf("no source URL for APKBUILD %s pknname %s", c.ConfigFilename, c.ApkBuild.PackageName)
+
+func (c Context) buildFetchStep(converter ApkConvertor) error {
+
+	apkBuild := converter.ApkBuild
+
+	if apkBuild.Source == "" {
+		c.Logger.Printf("skip adding pipeline for package %s, no source URL found", converter.PackageName)
+		return nil
 	}
-	if c.ApkBuild.PackageVersion == "" {
+	if apkBuild.PackageVersion == "" {
 		return fmt.Errorf("no package version")
 	}
-	source := strings.ReplaceAll(c.ApkBuild.Source, "$pkgver", c.ApkBuild.PackageVersion)
+	source := strings.ReplaceAll(apkBuild.Source, "$pkgver", apkBuild.PackageVersion)
 	_, err := url.ParseRequestURI(source)
 	if err != nil {
 		return errors.Wrapf(err, "parsing URI %s", source)
 	}
 
-	if !strings.HasSuffix(source, "tar.xz") && !strings.HasSuffix(source, "tar.gz") && !strings.HasSuffix(source, "bz2") {
+	if !strings.HasSuffix(source, "tar.xz") && !strings.HasSuffix(source, "tar.gz") && !strings.HasSuffix(source, "bz2") && !strings.HasSuffix(source, "zip") {
 		return fmt.Errorf("only tar.xz and tar.gz currently supported")
 	}
 
-	resp, err := c.Client.Get(source)
+	req, _ := http.NewRequest("GET", source, nil)
+	resp, err := c.Client.Do(req)
+
 	if err != nil {
-		return errors.Wrapf(err, "failed getting URI %s", c.ConfigFilename)
+		return errors.Wrapf(err, "failed getting URI %s", source)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("non ok http response code: %v", resp.StatusCode)
+	}
+
 	h := sha256.New()
 	if _, err := io.Copy(h, resp.Body); err != nil {
-		return errors.Wrapf(err, "generating sha265 for %s", c.ConfigFilename)
+		return errors.Wrapf(err, "generating sha265 for %s", source)
 	}
 
 	expectedSha := h.Sum(nil)
@@ -213,16 +236,16 @@ func (c Context) buildFetchStep() error {
 	pipeline := build.Pipeline{
 		Uses: "fetch",
 		With: map[string]string{
-			"uri":             strings.ReplaceAll(source, c.ApkBuild.PackageVersion, "${{package.version}}"),
+			"uri":             strings.ReplaceAll(source, apkBuild.PackageVersion, "${{package.version}}"),
 			"expected-sha256": fmt.Sprintf("%x", expectedSha),
 		},
 	}
-	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, pipeline)
+	converter.GeneratedMelageConfig.Pipeline = append(converter.GeneratedMelageConfig.Pipeline, pipeline)
 
 	return nil
 }
 
-func (c Context) mapMelange() {
+func (c ApkConvertor) mapMelange() {
 
 	c.GeneratedMelageConfig.Package.Name = c.ApkBuild.PackageName
 	c.GeneratedMelageConfig.Package.Description = c.ApkBuild.PackageDesc
@@ -279,22 +302,22 @@ func (c Context) mapMelange() {
 	//c.GeneratedMelageConfig.GeneratedFromComment = fmt.Sprintf("generated from file %s", c.ConfigFilename)
 }
 
-func (c Context) write() error {
+func (c ApkConvertor) write(outdir string) error {
 
 	actual, err := yaml.Marshal(&c.GeneratedMelageConfig)
 	if err != nil {
 		return errors.Wrapf(err, "marshalling melange configuration")
 	}
 
-	if _, err := os.Stat(c.OutDir); os.IsNotExist(err) {
-		err = os.MkdirAll(c.OutDir, os.ModePerm)
+	if _, err := os.Stat(outdir); os.IsNotExist(err) {
+		err = os.MkdirAll(outdir, os.ModePerm)
 		if err != nil {
-			return errors.Wrapf(err, "creating output directory %s", c.OutDir)
+			return errors.Wrapf(err, "creating output directory %s", outdir)
 		}
-
 	}
 
-	melangeFile := filepath.Join(c.OutDir, c.ApkBuild.PackageName+".yaml")
+	// write the melange config
+	melangeFile := filepath.Join(outdir, c.ApkBuild.PackageName+".yaml")
 	f, err := os.Create(melangeFile)
 	if err != nil {
 		return errors.Wrapf(err, "creating file %s", melangeFile)
@@ -302,10 +325,11 @@ func (c Context) write() error {
 	defer f.Close()
 
 	_, err = f.WriteString(string(actual))
+
 	return err
 }
 
-func (c Context) buildEnvironment() {
+func (c ApkConvertor) buildEnvironment() {
 
 	env := apkotypes.ImageConfiguration{
 		Contents: struct {
@@ -330,10 +354,9 @@ func (c Context) buildEnvironment() {
 			},
 		},
 	}
-	c.Logger.Printf("addition %s", c.AdditionalRepositories)
-	env.Contents.Repositories = append(env.Contents.Repositories, c.AdditionalRepositories...)
-	env.Contents.Keyring = append(env.Contents.Keyring, c.AdditionalKeyrings...)
-
+	//todo add back in
+	//env.Contents.Repositories = append(env.Contents.Repositories, c.AdditionalRepositories...)
+	//env.Contents.Keyring = append(env.Contents.Keyring, c.AdditionalKeyrings...)
 	env.Contents.Packages = append(env.Contents.Packages, c.ApkBuild.MakeDepends...)
 
 	for _, d := range c.ApkBuild.DependDev {
@@ -352,31 +375,79 @@ func (c Context) buildEnvironment() {
 	c.Environment = env
 }
 
-func (c Context) generateDependencies() error {
-	for _, d := range c.ApkBuild.MakeDepends {
-		c.foo(d)
+//
+//func (c Context) generateDependencies() error {
+//	for _, d := range c.ApkBuild.MakeDepends {
+//		c.foo(d)
+//	}
+//	for _, d := range c.ApkBuild.DependDev {
+//		c.foo(d)
+//	}
+//	return nil
+//}
+//
+//func (c Context) foo(d string) {
+//
+//	if d != "$depends_dev" {
+//		d = strings.TrimSuffix(d, "-dev")
+//		dependencyApkBuild := strings.ReplaceAll(c.ConfigFilename, c.ApkBuild.PackageName, d)
+//
+//		gc, err := New(dependencyApkBuild, c.OutDir)
+//		if err != nil {
+//			c.Logger.Printf("failed: " + err.Error())
+//		}
+//		gc.AdditionalRepositories = append(gc.AdditionalRepositories, c.AdditionalRepositories...)
+//		gc.AdditionalKeyrings = append(gc.AdditionalKeyrings, c.AdditionalKeyrings...)
+//		gc.Client = c.Client
+//
+//		err = gc.Generate()
+//		if err != nil {
+//			c.Logger.Printf("failed to generate: " + err.Error())
+//		}
+//	}
+//}
+
+// gather deps, add to map, loop deps, fetch their deps, add to map
+func (c Context) buildMapOfDependencies(apkBuildURI string) error {
+
+	convertor, exists := c.ApkConvertors[apkBuildURI]
+	if !exists {
+		return fmt.Errorf("no top level apk convertor found for URI %s", apkBuildURI)
 	}
-	for _, d := range c.ApkBuild.DependDev {
-		c.foo(d)
+
+	var deps []string
+
+	// if make dependencies includes a reference to dev_depends var then add them to the deps list
+	for _, dep := range convertor.ApkBuild.MakeDepends {
+		if dep == "$depends_dev" {
+			deps = append(deps, convertor.ApkBuild.DependDev...)
+		} else {
+			deps = append(deps, dep)
+		}
+	}
+
+	// recursively loop round and add any missing dependencies to the map
+	for _, dep := range deps {
+		// using the same base URI switch the existing package name for the dependency and get related APKBUILD
+		dependencyApkBuildURI := strings.ReplaceAll(apkBuildURI, convertor.ApkBuild.PackageName, dep)
+
+		// if we don't already have this dependency in the map, go get it
+		_, exists = c.ApkConvertors[dependencyApkBuildURI]
+		if !exists {
+			err := c.getApkBuildFile(dependencyApkBuildURI)
+			if err != nil {
+				// log and skip this dependency if there's an issue getting the APKBUILD as we are guessing the location of the APKBUILD
+				c.Logger.Printf("failed to get APKBUILD %s", dependencyApkBuildURI)
+				continue
+			}
+
+			err = c.buildMapOfDependencies(dependencyApkBuildURI)
+			if err != nil {
+				return errors.Wrap(err, "building map of dependencies")
+			}
+		}
 	}
 	return nil
 }
 
-func (c Context) foo(d string) {
-
-	if d != "$depends_dev" {
-		d = strings.TrimSuffix(d, "-dev")
-		dependencyApkBuild := strings.ReplaceAll(c.ConfigFilename, c.ApkBuild.PackageName, d)
-
-		gc, err := New(dependencyApkBuild, c.OutDir)
-		if err != nil {
-			c.Logger.Printf("failed: " + err.Error())
-		}
-		gc.AdditionalRepositories = append(gc.AdditionalRepositories, c.AdditionalRepositories...)
-		gc.AdditionalKeyrings = append(gc.AdditionalKeyrings, c.AdditionalKeyrings...)
-		err = gc.Generate()
-		if err != nil {
-			c.Logger.Printf("failed to generate: " + err.Error())
-		}
-	}
-}
+//todo get a map of existing wolfi packages and don't generate a melange config if exists
