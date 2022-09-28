@@ -147,7 +147,7 @@ func (c Context) Generate(apkBuildURI string) error {
 		apkConverter.mapMelange()
 
 		// builds the melange environment configuration
-		apkConverter.buildEnvironment()
+		apkConverter.buildEnvironment(c.AdditionalRepositories, c.AdditionalKeyrings)
 
 		err = apkConverter.write(strconv.Itoa(i), c.OutDir)
 		if err != nil {
@@ -390,7 +390,7 @@ func (c ApkConvertor) write(orderNumber, outdir string) error {
 }
 
 // adds a melange environment section
-func (c ApkConvertor) buildEnvironment() {
+func (c ApkConvertor) buildEnvironment(additionalRepositories, additionalKeyrings []string) {
 
 	env := apkotypes.ImageConfiguration{
 		Contents: struct {
@@ -415,9 +415,9 @@ func (c ApkConvertor) buildEnvironment() {
 			},
 		},
 	}
-	//todo add back in
-	//env.Contents.Repositories = append(env.Contents.Repositories, c.AdditionalRepositories...)
-	//env.Contents.Keyring = append(env.Contents.Keyring, c.AdditionalKeyrings...)
+
+	env.Contents.Repositories = append(env.Contents.Repositories, additionalRepositories...)
+	env.Contents.Keyring = append(env.Contents.Keyring, additionalKeyrings...)
 	env.Contents.Packages = append(env.Contents.Packages, c.ApkBuild.MakeDepends...)
 
 	for _, d := range c.ApkBuild.DependDev {
@@ -495,5 +495,3 @@ func (c Context) buildMapOfDependencies(apkBuildURI string) error {
 	}
 	return nil
 }
-
-//todo get a map of existing wolfi packages and don't generate a melange config if exists
