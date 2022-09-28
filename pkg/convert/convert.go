@@ -4,6 +4,7 @@ import (
 	"bufio"
 	apkotypes "chainguard.dev/apko/pkg/build/types"
 	"chainguard.dev/melange/pkg/build"
+	"chainguard.dev/melange/pkg/convert/wolfios"
 	"crypto/sha256"
 	"fmt"
 	"github.com/pkg/errors"
@@ -27,6 +28,7 @@ type Context struct {
 	AdditionalKeyrings     []string
 	Client                 *RLHTTPClient
 	Logger                 *log.Logger
+	WolfiOSPackages        map[string][]string
 }
 type ApkConvertor struct {
 	*ApkBuild
@@ -55,6 +57,8 @@ type GeneratedMelageConfig struct {
 	//GeneratedFromComment string                        `yaml:"#"` //todo figure out how to add unescaped comments
 }
 
+const WOLFIOS_PACKAGE_REPOSITORY = "https://packages.wolfi.dev/"
+
 func New() (Context, error) {
 	context := Context{
 		ApkConvertors: map[string]ApkConvertor{},
@@ -63,6 +67,28 @@ func New() (Context, error) {
 			Ratelimiter: rate.NewLimiter(rate.Every(1*time.Second), 1), // 10 request every 10 seconds
 		},
 		Logger: log.New(log.Writer(), "melange: ", log.LstdFlags|log.Lmsgprefix),
+	}
+
+	req, _ := http.NewRequest("GET", WOLFIOS_PACKAGE_REPOSITORY, nil)
+	resp, err := context.Client.Do(req)
+
+	if err != nil {
+		context.Logger.Fatalf("failed getting URI %s: %s", WOLFIOS_PACKAGE_REPOSITORY, err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		context.Logger.Fatalf("non ok http response for URI %s code: %v: %s", WOLFIOS_PACKAGE_REPOSITORY, resp.StatusCode, err.Error())
+	}
+
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		context.Logger.Fatalf("reading APKBUILD file")
+	}
+
+	context.WolfiOSPackages, err = wolfios.ParseWolfiPackages(b)
+	if err != nil {
+		context.Logger.Fatalf("parsing wolfios packages")
 	}
 
 	return context, nil
@@ -201,6 +227,8 @@ func (c Context) buildFetchStep(converter ApkConvertor) error {
 	if apkBuild.PackageVersion == "" {
 		return fmt.Errorf("no package version")
 	}
+
+	// replace typical placeholders found in APKBUILD files
 	source := strings.ReplaceAll(apkBuild.Source, "$pkgver", apkBuild.PackageVersion)
 	source = strings.ReplaceAll(source, "${pkgver%.*}", apkBuild.PackageVersion)
 	source = strings.ReplaceAll(source, "$_pkgver", apkBuild.PackageVersion)
@@ -344,9 +372,9 @@ func (c ApkConvertor) buildEnvironment() {
 
 	env := apkotypes.ImageConfiguration{
 		Contents: struct {
-			Repositories []string `yaml:"repositories"`
-			Keyring      []string `yaml:"keyring"`
-			Packages     []string `yaml:"packages"`
+			Repositories []string
+			Keyring      []string
+			Packages     []string
 		}{
 			Repositories: []string{
 				"https://packages.wolfi.dev/bootstrap/stage3",
@@ -409,6 +437,12 @@ func (c Context) buildMapOfDependencies(apkBuildURI string) error {
 	for _, dep := range deps {
 
 		if strings.TrimSpace(dep) == "" {
+			continue
+		}
+
+		// skip if we already have a package in wolfi-os repository
+		wolfiPackage := c.WolfiOSPackages[dep]
+		if len(wolfiPackage) > 0 {
 			continue
 		}
 
