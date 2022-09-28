@@ -44,17 +44,7 @@ func TestGetApkDependencies(t *testing.T) {
 	// Close the server when test finishes
 	defer server.Close()
 
-	context := Context{
-		ApkConvertors: make(map[string]ApkConvertor),
-		Client: &RLHTTPClient{
-			client: server.Client(),
-
-			// for unit tests we don't need to rate limit requests
-			Ratelimiter: rate.NewLimiter(rate.Every(1*time.Second), 20), // 10 request every 10 seconds
-		},
-		Logger: log.New(log.Writer(), "test: ", log.LstdFlags|log.Lmsgprefix),
-		OutDir: t.TempDir(),
-	}
+	context := getTestContext(t, server)
 
 	// the top level APKBUILD is cheese
 	err = context.Generate(server.URL + "/" + "cheese")
@@ -76,15 +66,6 @@ func TestGetApkDependencies(t *testing.T) {
 
 }
 
-func contains(s []string, e string) bool {
-	for _, a := range s {
-		if a == e {
-			return true
-		}
-	}
-	return false
-}
-
 func TestGetApkBuildFile(t *testing.T) {
 	configFilename := "/aports/tree/main/util-macros/APKBUILD"
 
@@ -104,8 +85,7 @@ func TestGetApkBuildFile(t *testing.T) {
 	// Close the server when test finishes
 	defer server.Close()
 
-	context, err := New()
-	assert.NoError(t, err)
+	context := getTestContext(t, server)
 
 	context.Client.client = server.Client()
 	err = context.getApkBuildFile(server.URL + configFilename)
@@ -181,14 +161,8 @@ func TestContext_getSourceSha(t *testing.T) {
 		}))
 
 		// initialise Context with test values
-		c := Context{
-			ApkConvertors: map[string]ApkConvertor{},
+		c := getTestContext(t, server)
 
-			Client: &RLHTTPClient{
-				client:      server.Client(),
-				Ratelimiter: rate.NewLimiter(rate.Every(1*time.Second), 20), // 10 request every 10 seconds
-			},
-		}
 		c.ApkConvertors[tt.name] = ApkConvertor{
 			ApkBuild: &ApkBuild{
 				Source:         server.URL + "/" + tt.fields.TestUrl,
@@ -244,7 +218,9 @@ func Test_context_mapMelange(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			apkBuild.SubPackages = tt.subPackages
 			c := Context{
-				ApkConvertors: map[string]ApkConvertor{},
+				NavigationMap: &NavigationMap{
+					ApkConvertors: make(map[string]ApkConvertor),
+				},
 			}
 			c.ApkConvertors[tt.name] = ApkConvertor{
 				ApkBuild:              apkBuild,
@@ -269,8 +245,10 @@ func TestScannerError(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "scanner_error.yaml"))
 	assert.NoError(t, err)
 	c := Context{
-		ApkConvertors: map[string]ApkConvertor{},
-		Logger:        log.New(log.Writer(), "unittest: ", log.LstdFlags|log.Lmsgprefix),
+		NavigationMap: &NavigationMap{
+			ApkConvertors: make(map[string]ApkConvertor),
+		},
+		Logger: log.New(log.Writer(), "unittest: ", log.LstdFlags|log.Lmsgprefix),
 	}
 	key := "https://git.alpinelinux.org/aports/plain/main/libxext/APKBUILD"
 	c.ApkConvertors[key] = ApkConvertor{
@@ -280,4 +258,30 @@ func TestScannerError(t *testing.T) {
 	c.parseApkBuild(bytes.NewReader(data), key)
 	assert.NoError(t, err)
 	assert.Equal(t, "https://www.x.org/releases/individual/lib/libXext-$pkgver.tar.bz2", c.ApkConvertors[key].ApkBuild.Source)
+}
+
+func getTestContext(t *testing.T, server *httptest.Server) Context {
+	return Context{
+		NavigationMap: &NavigationMap{
+			ApkConvertors: make(map[string]ApkConvertor),
+		},
+
+		Client: &RLHTTPClient{
+			client: server.Client(),
+
+			// for unit tests we don't need to rate limit requests
+			Ratelimiter: rate.NewLimiter(rate.Every(1*time.Second), 20), // 10 request every 10 seconds
+		},
+		Logger: log.New(log.Writer(), "test: ", log.LstdFlags|log.Lmsgprefix),
+		OutDir: t.TempDir(),
+	}
+}
+
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
 }
