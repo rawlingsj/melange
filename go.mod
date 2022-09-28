@@ -3,7 +3,7 @@ module chainguard.dev/melange
 go 1.18
 
 require (
-	chainguard.dev/apko main
+	chainguard.dev/apko v0.5.1-0.20220927193706-51ec859d4c8b
 	github.com/google/go-cmp v0.5.9
 	github.com/pkg/errors v0.9.1
 	github.com/psanford/memfs v0.0.0-20210214183328-a001468d78ef
