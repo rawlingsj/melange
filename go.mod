@@ -2,11 +2,8 @@ module chainguard.dev/melange
 
 go 1.18
 
-// DONT MERGE
-replace chainguard.dev/apko => ../apko
-
 require (
-	chainguard.dev/apko v0.5.1-0.20220830000151-937b2b254237
+	chainguard.dev/apko main
 	github.com/google/go-cmp v0.5.9
 	github.com/pkg/errors v0.9.1
 	github.com/psanford/memfs v0.0.0-20210214183328-a001468d78ef
