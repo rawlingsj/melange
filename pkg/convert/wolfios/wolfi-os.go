@@ -22,6 +22,8 @@ type Contents struct {
 	Key string `xml:"Key"`
 }
 
+const WolfiosPackageRepository = "https://packages.wolfi.dev/"
+
 func ParseWolfiPackages(data []byte) (map[string][]string, error) {
 
 	c := Context{

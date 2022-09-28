@@ -34,7 +34,7 @@ type Context struct {
 }
 type NavigationMap struct {
 	ApkConvertors map[string]ApkConvertor
-	Orderedkeys   []string
+	OrderedKeys   []string
 }
 
 type Dependency struct {
@@ -44,7 +44,6 @@ type ApkConvertor struct {
 	*ApkBuild
 	ApkBuildRaw            []byte
 	*GeneratedMelageConfig `yaml:"-"`
-	ConfigFilename         string
 }
 type ApkBuild struct {
 	PackageName    string
@@ -60,44 +59,43 @@ type ApkBuild struct {
 	Source         string
 }
 type GeneratedMelageConfig struct {
-	Package     build.Package                `yaml:"package"`
-	Environment apkotypes.ImageConfiguration `yaml:"environment,omitempty"`
-	Pipeline    []build.Pipeline             `yaml:"pipeline,omitempty"`
-	Subpackages []build.Subpackage           `yaml:"subpackages,omitempty"`
-	//GeneratedFromComment string                        `yaml:"#"` //todo figure out how to add unescaped comments
+	Package              build.Package                `yaml:"package"`
+	Environment          apkotypes.ImageConfiguration `yaml:"environment,omitempty"`
+	Pipeline             []build.Pipeline             `yaml:"pipeline,omitempty"`
+	Subpackages          []build.Subpackage           `yaml:"subpackages,omitempty"`
+	GeneratedFromComment string                       `yaml:"-"`
 }
 
-const WolfiosPackageRepository = "https://packages.wolfi.dev/"
-
+// New initialise including a map of existing wolfios packages
 func New() (Context, error) {
 	context := Context{
 		NavigationMap: &NavigationMap{
 			ApkConvertors: map[string]ApkConvertor{},
-			Orderedkeys:   []string{},
+			OrderedKeys:   []string{},
 		},
 
 		Client: &RLHTTPClient{
 			client:      http.DefaultClient,
-			Ratelimiter: rate.NewLimiter(rate.Every(1*time.Second), 1), // 10 request every 10 seconds
+			Ratelimiter: rate.NewLimiter(rate.Every(5*time.Second), 1), // 10 request every 10 seconds
 		},
 		Logger: log.New(log.Writer(), "melange: ", log.LstdFlags|log.Lmsgprefix),
 	}
 
-	req, _ := http.NewRequest("GET", WolfiosPackageRepository, nil)
+	req, _ := http.NewRequest("GET", wolfios.WolfiosPackageRepository, nil)
 	resp, err := context.Client.Do(req)
 
 	if err != nil {
-		return context, errors.Wrapf(err, "failed getting URI %s", WolfiosPackageRepository)
+		return context, errors.Wrapf(err, "failed getting URI %s", wolfios.WolfiosPackageRepository)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return context, fmt.Errorf("non ok http response for URI %s code: %v", WolfiosPackageRepository, resp.StatusCode)
+		return context, fmt.Errorf("non ok http response for URI %s code: %v", wolfios.WolfiosPackageRepository, resp.StatusCode)
 	}
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		context.Logger.Fatalf("reading APKBUILD file")
+		return context, errors.Wrap(err, "reading APKBUILD file")
 	}
 
 	context.WolfiOSPackages, err = wolfios.ParseWolfiPackages(b)
@@ -130,10 +128,10 @@ func (c Context) Generate(apkBuildURI string) error {
 
 	// reverse map order so we generate lowest transitive dependency first
 	// this will help to build melange config in the right order
-	ReverseSlice(c.Orderedkeys)
+	ReverseSlice(c.OrderedKeys)
 
 	//// loop over map and generate melange config for each
-	for i, key := range c.Orderedkeys {
+	for i, key := range c.OrderedKeys {
 
 		apkConverter := c.ApkConvertors[key]
 		// automatically add a fetch step to the melange config to fetch the source
@@ -183,10 +181,12 @@ func (c Context) getApkBuildFile(apkFilename string) error {
 func (c *Context) parseApkBuild(r io.Reader, key string) error {
 
 	c.ApkConvertors[key] = ApkConvertor{
-		ApkBuild:              &ApkBuild{},
-		GeneratedMelageConfig: &GeneratedMelageConfig{},
+		ApkBuild: &ApkBuild{},
+		GeneratedMelageConfig: &GeneratedMelageConfig{
+			GeneratedFromComment: key,
+		},
 	}
-	c.Orderedkeys = append(c.Orderedkeys, key)
+	c.OrderedKeys = append(c.OrderedKeys, key)
 	apkbuild := c.ApkConvertors[key].ApkBuild
 
 	// turn into byte array else scanner skips lines
@@ -357,9 +357,6 @@ func (c ApkConvertor) mapMelange() {
 
 		c.GeneratedMelageConfig.Subpackages = append(c.GeneratedMelageConfig.Subpackages, subpackage)
 	}
-
-	// todo add back once unescaped comments can be marshalled
-	//c.GeneratedMelageConfig.GeneratedFromComment = fmt.Sprintf("generated from file %s", c.ConfigFilename)
 }
 
 func (c ApkConvertor) write(orderNumber, outdir string) error {
@@ -384,9 +381,16 @@ func (c ApkConvertor) write(orderNumber, outdir string) error {
 	}
 	defer f.Close()
 
-	_, err = f.WriteString(string(actual))
+	_, err = f.WriteString(fmt.Sprintf("# Generated from %s\n", c.GeneratedMelageConfig.GeneratedFromComment))
+	if err != nil {
+		return errors.Wrapf(err, "creating writing to file %s", melangeFile)
+	}
 
-	return err
+	_, err = f.WriteString(string(actual))
+	if err != nil {
+		return errors.Wrapf(err, "creating writing to file %s", melangeFile)
+	}
+	return nil
 }
 
 // adds a melange environment section
