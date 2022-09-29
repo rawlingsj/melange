@@ -57,6 +57,7 @@ type ApkBuild struct {
 	MakeDepends    []string
 	SubPackages    []string
 	Source         string
+	CMake          bool
 }
 type GeneratedMelageConfig struct {
 	Package              build.Package                `yaml:"package"`
@@ -75,8 +76,10 @@ func New() (Context, error) {
 		},
 
 		Client: &RLHTTPClient{
-			client:      http.DefaultClient,
-			Ratelimiter: rate.NewLimiter(rate.Every(5*time.Second), 1), // 10 request every 10 seconds
+			client: http.DefaultClient,
+
+			// 1 request every second to avoid DOS'ing server
+			Ratelimiter: rate.NewLimiter(rate.Every(1*time.Second), 1),
 		},
 		Logger: log.New(log.Writer(), "melange: ", log.LstdFlags|log.Lmsgprefix),
 	}
@@ -98,6 +101,7 @@ func New() (Context, error) {
 		return context, errors.Wrap(err, "reading APKBUILD file")
 	}
 
+	// keep the map of wolfi packages on the main struct so it's easy to check if we already have any ABKBUILD dependencies
 	context.WolfiOSPackages, err = wolfios.ParseWolfiPackages(b)
 	if err != nil {
 		return context, errors.Wrapf(err, "parsing wolfi packages")
@@ -126,14 +130,15 @@ func (c Context) Generate(apkBuildURI string) error {
 		return errors.Wrap(err, "building map of dependencies")
 	}
 
-	// reverse map order so we generate lowest transitive dependency first
-	// this will help to build melange config in the right order
+	// reverse map order, so we generate the lowest transitive dependency first
+	// this will help to build melange configs in the correct order
 	ReverseSlice(c.OrderedKeys)
 
-	//// loop over map and generate melange config for each
+	// loop over map and generate melange config for each
 	for i, key := range c.OrderedKeys {
 
 		apkConverter := c.ApkConvertors[key]
+
 		// automatically add a fetch step to the melange config to fetch the source
 		err = c.buildFetchStep(apkConverter)
 		if err != nil {
@@ -227,13 +232,78 @@ func (c *Context) parseApkBuild(r io.Reader, key string) error {
 			case "subpackages":
 				apkbuild.SubPackages = strings.Split(value, " ")
 			case "makedepends":
-				apkbuild.MakeDepends = strings.Split(value, " ")
+				apkbuild.MakeDepends = append(apkbuild.MakeDepends, strings.Split(value, " ")...)
+			case "makedepends_host":
+				apkbuild.MakeDepends = append(apkbuild.MakeDepends, strings.Split(value, " ")...)
 			case "source":
 				apkbuild.Source = value
+			case "cmake":
+				apkbuild.CMake = true
 			}
 		}
 	}
 
+	return nil
+}
+
+// recursively add dependencies, and their dependencies to our map
+func (c Context) buildMapOfDependencies(apkBuildURI string) error {
+
+	convertor, exists := c.ApkConvertors[apkBuildURI]
+	if !exists {
+		return fmt.Errorf("no top level apk convertor found for URI %s", apkBuildURI)
+	}
+
+	var deps []string
+
+	// if make dependencies includes a reference to dev_depends var then add them to the deps list
+	for _, dep := range convertor.ApkBuild.MakeDepends {
+		if dep == "$depends_dev" {
+			deps = append(deps, convertor.ApkBuild.DependDev...)
+		} else {
+			deps = append(deps, dep)
+		}
+	}
+
+	// recursively loop round and add any missing dependencies to the map
+	for _, dep := range deps {
+
+		if strings.TrimSpace(dep) == "" {
+			continue
+		}
+
+		// skip if we already have a package in wolfi-os repository
+		wolfiPackage := c.WolfiOSPackages[dep]
+		if len(wolfiPackage) > 0 {
+			continue
+		}
+
+		// remove -dev from dependency name when looking up matching APKBUILD
+		dep = strings.TrimSuffix(dep, "-dev")
+
+		c.Logger.Printf("looking at %s", dep)
+
+		// using the same base URI switch the existing package name for the dependency and get related APKBUILD
+		dependencyApkBuildURI := strings.ReplaceAll(apkBuildURI, convertor.ApkBuild.PackageName, dep)
+
+		// if we don't already have this dependency in the map, go get it
+		_, exists = c.ApkConvertors[dependencyApkBuildURI]
+		if !exists {
+
+			err := c.getApkBuildFile(dependencyApkBuildURI)
+			if err != nil {
+				// log and skip this dependency if there's an issue getting the APKBUILD as we are guessing the location of the APKBUILD
+				c.Logger.Printf("failed to get APKBUILD %s", dependencyApkBuildURI)
+				continue
+			}
+
+			err = c.buildMapOfDependencies(dependencyApkBuildURI)
+			if err != nil {
+				return errors.Wrap(err, "building map of dependencies")
+			}
+
+		}
+	}
 	return nil
 }
 
@@ -319,9 +389,16 @@ func (c ApkConvertor) mapMelange() {
 	}
 	c.GeneratedMelageConfig.Package.Copyright = append(c.GeneratedMelageConfig.Package.Copyright, copyright)
 
-	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/configure"})
-	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make"})
-	c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make-install"})
+	if c.ApkBuild.CMake {
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "cmake/configure"})
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "cmake/build"})
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "cmake/install"})
+
+	} else {
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/configure"})
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make"})
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make-install"})
+	}
 
 	for _, subPackage := range c.ApkBuild.SubPackages {
 		subpackage := build.Subpackage{
@@ -357,40 +434,6 @@ func (c ApkConvertor) mapMelange() {
 
 		c.GeneratedMelageConfig.Subpackages = append(c.GeneratedMelageConfig.Subpackages, subpackage)
 	}
-}
-
-func (c ApkConvertor) write(orderNumber, outdir string) error {
-
-	actual, err := yaml.Marshal(&c.GeneratedMelageConfig)
-	if err != nil {
-		return errors.Wrapf(err, "marshalling melange configuration")
-	}
-
-	if _, err := os.Stat(outdir); os.IsNotExist(err) {
-		err = os.MkdirAll(outdir, os.ModePerm)
-		if err != nil {
-			return errors.Wrapf(err, "creating output directory %s", outdir)
-		}
-	}
-
-	// write the melange config
-	melangeFile := filepath.Join(outdir, orderNumber+"-"+c.ApkBuild.PackageName+".yaml")
-	f, err := os.Create(melangeFile)
-	if err != nil {
-		return errors.Wrapf(err, "creating file %s", melangeFile)
-	}
-	defer f.Close()
-
-	_, err = f.WriteString(fmt.Sprintf("# Generated from %s\n", c.GeneratedMelageConfig.GeneratedFromComment))
-	if err != nil {
-		return errors.Wrapf(err, "creating writing to file %s", melangeFile)
-	}
-
-	_, err = f.WriteString(string(actual))
-	if err != nil {
-		return errors.Wrapf(err, "creating writing to file %s", melangeFile)
-	}
-	return nil
 }
 
 // adds a melange environment section
@@ -440,62 +483,36 @@ func (c ApkConvertor) buildEnvironment(additionalRepositories, additionalKeyring
 	c.Environment = env
 }
 
-// gather deps, add to map, loop deps, fetch their deps, add to map
-func (c Context) buildMapOfDependencies(apkBuildURI string) error {
+func (c ApkConvertor) write(orderNumber, outdir string) error {
 
-	convertor, exists := c.ApkConvertors[apkBuildURI]
-	if !exists {
-		return fmt.Errorf("no top level apk convertor found for URI %s", apkBuildURI)
+	actual, err := yaml.Marshal(&c.GeneratedMelageConfig)
+	if err != nil {
+		return errors.Wrapf(err, "marshalling melange configuration")
 	}
 
-	var deps []string
-
-	// if make dependencies includes a reference to dev_depends var then add them to the deps list
-	for _, dep := range convertor.ApkBuild.MakeDepends {
-		if dep == "$depends_dev" {
-			deps = append(deps, convertor.ApkBuild.DependDev...)
-		} else {
-			deps = append(deps, dep)
+	if _, err := os.Stat(outdir); os.IsNotExist(err) {
+		err = os.MkdirAll(outdir, os.ModePerm)
+		if err != nil {
+			return errors.Wrapf(err, "creating output directory %s", outdir)
 		}
 	}
 
-	// recursively loop round and add any missing dependencies to the map
-	for _, dep := range deps {
+	// write the melange config, prefix with our guessed order along with zero to help users easily rename / reorder generated files
+	melangeFile := filepath.Join(outdir, orderNumber+"0-"+c.ApkBuild.PackageName+".yaml")
+	f, err := os.Create(melangeFile)
+	if err != nil {
+		return errors.Wrapf(err, "creating file %s", melangeFile)
+	}
+	defer f.Close()
 
-		if strings.TrimSpace(dep) == "" {
-			continue
-		}
+	_, err = f.WriteString(fmt.Sprintf("# Generated from %s\n", c.GeneratedMelageConfig.GeneratedFromComment))
+	if err != nil {
+		return errors.Wrapf(err, "creating writing to file %s", melangeFile)
+	}
 
-		// skip if we already have a package in wolfi-os repository
-		wolfiPackage := c.WolfiOSPackages[dep]
-		if len(wolfiPackage) > 0 {
-			continue
-		}
-
-		// remove -dev from dependency name when looking up matching APKBUILD
-		dep = strings.TrimSuffix(dep, "-dev")
-
-		c.Logger.Printf("looking at %s", dep)
-		// using the same base URI switch the existing package name for the dependency and get related APKBUILD
-		dependencyApkBuildURI := strings.ReplaceAll(apkBuildURI, convertor.ApkBuild.PackageName, dep)
-
-		// if we don't already have this dependency in the map, go get it
-		_, exists = c.ApkConvertors[dependencyApkBuildURI]
-		if !exists {
-
-			err := c.getApkBuildFile(dependencyApkBuildURI)
-			if err != nil {
-				// log and skip this dependency if there's an issue getting the APKBUILD as we are guessing the location of the APKBUILD
-				c.Logger.Printf("failed to get APKBUILD %s", dependencyApkBuildURI)
-				continue
-			}
-
-			err = c.buildMapOfDependencies(dependencyApkBuildURI)
-			if err != nil {
-				return errors.Wrap(err, "building map of dependencies")
-			}
-
-		}
+	_, err = f.WriteString(string(actual))
+	if err != nil {
+		return errors.Wrapf(err, "creating writing to file %s", melangeFile)
 	}
 	return nil
 }
