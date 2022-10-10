@@ -2,6 +2,7 @@ package convert
 
 import (
 	"bufio"
+	"bytes"
 	apkotypes "chainguard.dev/apko/pkg/build/types"
 	"chainguard.dev/melange/pkg/build"
 	"chainguard.dev/melange/pkg/convert/wolfios"
@@ -56,8 +57,9 @@ type ApkBuild struct {
 	DependDev      []string
 	MakeDepends    []string
 	SubPackages    []string
-	Source         string
-	CMake          bool
+	Source         []string
+	BuilderType    string
+	Sha512sums     map[string]string
 }
 type GeneratedMelageConfig struct {
 	Package              build.Package                `yaml:"package"`
@@ -66,6 +68,12 @@ type GeneratedMelageConfig struct {
 	Subpackages          []build.Subpackage           `yaml:"subpackages,omitempty"`
 	GeneratedFromComment string                       `yaml:"-"`
 }
+
+const (
+	BuilderTypeMake  = "make"
+	BuilderTypeCMake = "cmake"
+	BuilderTypeMeson = "meson"
+)
 
 // New initialise including a map of existing wolfios packages
 func New() (Context, error) {
@@ -186,9 +194,15 @@ func (c Context) getApkBuildFile(apkFilename string) error {
 func (c *Context) parseApkBuild(r io.Reader, key string) error {
 
 	c.ApkConvertors[key] = ApkConvertor{
-		ApkBuild: &ApkBuild{},
+		ApkBuild: &ApkBuild{
+			BuilderType: BuilderTypeMake,
+			Sha512sums:  map[string]string{},
+		},
 		GeneratedMelageConfig: &GeneratedMelageConfig{
 			GeneratedFromComment: key,
+			Package: build.Package{
+				Epoch: 0,
+			},
 		},
 	}
 	c.OrderedKeys = append(c.OrderedKeys, key)
@@ -202,14 +216,51 @@ func (c *Context) parseApkBuild(r io.Reader, key string) error {
 
 	scanner := bufio.NewScanner(strings.NewReader(string(b)))
 
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+
+		if j := bytes.IndexAny(data, "\n"); j >= 0 {
+
+			// if there is a quote then we should split on the end quote as could be multiline string
+			if k := bytes.IndexAny(data[0:j+1], "\""); k >= 0 {
+				last := bytes.IndexAny(data[k+1:], "\"")
+				if last == -1 {
+					last = len(data)
+				}
+
+				// replace newlines
+				result := bytes.ReplaceAll(data[0:k+last+2], []byte("\n"), []byte(" "))
+
+				// replace tabs
+				result = bytes.ReplaceAll(result, []byte("\t"), []byte(""))
+
+				// replace double spaces with single to help with split
+				result = bytes.ReplaceAll(result, []byte("  "), []byte(" "))
+				result = bytes.TrimSpace(result)
+				return k + last + 2, result, nil
+			}
+			return j + 1, data[0 : j+1], nil
+		}
+
+		if atEOF {
+			return len(data), data, nil
+		}
+
+		return 0, nil, nil
+	})
+
 	for scanner.Scan() {
 
 		line := strings.TrimSpace(scanner.Text())
 		if line != "" && strings.Contains(line, "=") {
 			parts := strings.Split(line, "=")
 
-			value := strings.ReplaceAll(parts[1], "\"", "")
-			value = strings.TrimSpace(value)
+			value := strings.TrimSpace(parts[1])
+
+			value = strings.ReplaceAll(value, "\"", "")
+			//value = strings.TrimSpace(value)
 
 			switch parts[0] {
 
@@ -224,26 +275,112 @@ func (c *Context) parseApkBuild(r io.Reader, key string) error {
 			case "url":
 				apkbuild.PackageUrl = value
 			case "arch":
-				apkbuild.Arch = strings.Split(value, " ")
+				if strings.IndexAny(value, "\n") >= 0 {
+					apkbuild.Arch = append(apkbuild.Arch, strings.Split(value, "\n")...)
+				} else {
+					apkbuild.Arch = strings.Split(value, " ")
+				}
 			case "license":
 				apkbuild.License = value
 			case "depends_dev":
-				apkbuild.DependDev = strings.Split(value, " ")
+				if strings.IndexAny(value, "\n") >= 0 {
+					apkbuild.DependDev = append(apkbuild.DependDev, strings.Split(value, "\n")...)
+				} else {
+					apkbuild.DependDev = strings.Split(value, " ")
+				}
 			case "subpackages":
-				apkbuild.SubPackages = strings.Split(value, " ")
+
+				if strings.IndexAny(value, "\n") >= 0 {
+					apkbuild.SubPackages = append(apkbuild.SubPackages, strings.Split(value, "\n")...)
+				} else {
+					apkbuild.SubPackages = strings.Split(value, " ")
+				}
 			case "makedepends":
-				apkbuild.MakeDepends = append(apkbuild.MakeDepends, strings.Split(value, " ")...)
+				if strings.IndexAny(value, "\n") >= 0 {
+					apkbuild.MakeDepends = append(apkbuild.MakeDepends, strings.Split(value, "\n")...)
+				} else {
+					apkbuild.MakeDepends = append(apkbuild.MakeDepends, strings.Split(value, " ")...)
+				}
+
 			case "makedepends_host":
-				apkbuild.MakeDepends = append(apkbuild.MakeDepends, strings.Split(value, " ")...)
+				if strings.IndexAny(value, "\n") >= 0 {
+					apkbuild.MakeDepends = append(apkbuild.MakeDepends, strings.Split(value, "\n")...)
+				} else {
+					apkbuild.MakeDepends = append(apkbuild.MakeDepends, strings.Split(value, " ")...)
+				}
+
 			case "source":
-				apkbuild.Source = value
+
+				multiparts := strings.Split(value, " ")
+				if len(multiparts) > 0 {
+					for _, multipart := range multiparts {
+						if strings.TrimSpace(multipart) != "" {
+							apkbuild.Source = append(apkbuild.Source, multipart)
+						}
+					}
+
+				} else {
+					apkbuild.Source = append(apkbuild.Source, strings.Split(value, " ")...)
+				}
+			case "sha512sums":
+
+				multiparts := strings.Split(value, " ")
+				if len(multiparts) > 0 {
+					for i := 0; i < len(multiparts); i++ {
+						sha := multiparts[i]
+						if strings.TrimSpace(sha) != "" {
+
+							// checksum details are in key / value format
+							// this is pretty horrible code, let's make this better
+							artifact := multiparts[i+1]
+							if strings.TrimSpace(artifact) != "" {
+								i++
+
+							} else {
+								artifact = multiparts[i+2]
+								if artifact != "" {
+									i = i + 2
+								}
+							}
+							if artifact == "" {
+								c.Logger.Printf("checksum %s does not have an artifact", sha)
+								continue
+							}
+
+							apkbuild.Sha512sums[artifact] = sha
+						}
+					}
+
+				} else {
+					checksumDetails := strings.Split(value, " ")
+					if len(checksumDetails) != 2 {
+						c.Logger.Printf("checksum does not have 2 parts to it, expecting sha and filename, got %s", checksumDetails)
+						continue
+					}
+
+					apkbuild.Sha512sums[checksumDetails[0]] = checksumDetails[1]
+				}
+				//todo we don't yet parse lines with make / cmake / meson in
+			case "make":
+				apkbuild.BuilderType = BuilderTypeMake
 			case "cmake":
-				apkbuild.CMake = true
+				apkbuild.BuilderType = BuilderTypeCMake
+			case "meson":
+				apkbuild.BuilderType = BuilderTypeMeson
+
 			}
 		}
 	}
 
 	return nil
+}
+
+func (c *Context) split(value string, apkbuild *ApkBuild, foo string) {
+	if strings.IndexAny(value, "\n") > 0 {
+		apkbuild.Arch = append(apkbuild.Arch, strings.Split(value, "\n")...)
+	} else {
+		apkbuild.Arch = strings.Split(value, " ")
+	}
 }
 
 // recursively add dependencies, and their dependencies to our map
@@ -307,12 +444,12 @@ func (c Context) buildMapOfDependencies(apkBuildURI string) error {
 	return nil
 }
 
-// adds a pipeline fetch step along with expected sha, to clone the package source
+// add pipeline fetch steps and validate checksums
 func (c Context) buildFetchStep(converter ApkConvertor) error {
 
 	apkBuild := converter.ApkBuild
 
-	if apkBuild.Source == "" {
+	if len(apkBuild.Source) == 0 {
 		c.Logger.Printf("skip adding pipeline for package %s, no source URL found", converter.PackageName)
 		return nil
 	}
@@ -320,56 +457,60 @@ func (c Context) buildFetchStep(converter ApkConvertor) error {
 		return fmt.Errorf("no package version")
 	}
 
-	// replace typical placeholders found in APKBUILD files
-	source := strings.ReplaceAll(apkBuild.Source, "$pkgver", apkBuild.PackageVersion)
-	source = strings.ReplaceAll(source, "${pkgver%.*}", apkBuild.PackageVersion)
-	source = strings.ReplaceAll(source, "$_pkgver", apkBuild.PackageVersion)
-	source = strings.ReplaceAll(source, "$pkgname", apkBuild.PackageName)
-	source = strings.ReplaceAll(source, "$_pkgname", apkBuild.PackageName)
+	// there can be multiple sources, let's add them all so it's easier for users to remove from generated files if not needed
+	for _, s := range apkBuild.Source {
+		// replace typical placeholders found in APKBUILD files
+		source := strings.ReplaceAll(s, "$pkgver", apkBuild.PackageVersion)
+		source = strings.ReplaceAll(source, "${pkgver%.*}", apkBuild.PackageVersion)
+		source = strings.ReplaceAll(source, "$_pkgver", apkBuild.PackageVersion)
+		source = strings.ReplaceAll(source, "${_pkgver}", apkBuild.PackageVersion)
+		source = strings.ReplaceAll(source, "${pkgver//./-}", strings.ReplaceAll(apkBuild.PackageVersion, ".", "-"))
+		source = strings.ReplaceAll(source, "$pkgname", apkBuild.PackageName)
+		source = strings.ReplaceAll(source, "$_pkgname", apkBuild.PackageName)
+		source = strings.ReplaceAll(source, "${pkgname}", apkBuild.PackageName)
 
-	_, err := url.ParseRequestURI(source)
-	if err != nil {
-		return errors.Wrapf(err, "parsing URI %s", source)
-	}
-
-	// todo make this cleaner
-	if !strings.HasSuffix(source, "tar.xz") && !strings.HasSuffix(source, "tar.gz") && !strings.HasSuffix(source, "bz2") && !strings.HasSuffix(source, "zip") && !strings.HasSuffix(source, "tgz") {
-		return fmt.Errorf("only tar.xz, tar.gz, bz2, tgz and zip files currently supported, got %s", source)
-	}
-
-	req, _ := http.NewRequest("GET", source, nil)
-	resp, err := c.Client.Do(req)
-
-	if err != nil {
-		return errors.Wrapf(err, "failed getting URI %s", source)
-	}
-	defer resp.Body.Close()
-
-	failed := false
-	if resp.StatusCode != http.StatusOK {
-		c.Logger.Printf("non ok http response for URI %s code: %v", source, resp.StatusCode)
-		failed = true
-	}
-
-	var expectedSha string
-	if !failed {
-		h := sha256.New()
-		if _, err := io.Copy(h, resp.Body); err != nil {
-			return errors.Wrapf(err, "generating sha265 for %s", source)
+		_, err := url.ParseRequestURI(source)
+		if err != nil {
+			return errors.Wrapf(err, "parsing URI %s", source)
 		}
-		expectedSha = fmt.Sprintf("%x", h.Sum(nil))
-	} else {
-		expectedSha = "FIXME - SOURCE URL NOT VALID"
-	}
 
-	pipeline := build.Pipeline{
-		Uses: "fetch",
-		With: map[string]string{
-			"uri":             strings.ReplaceAll(source, apkBuild.PackageVersion, "${{package.version}}"),
-			"expected-sha256": expectedSha,
-		},
+		req, _ := http.NewRequest("GET", source, nil)
+		resp, err := c.Client.Do(req)
+
+		if err != nil {
+			return errors.Wrapf(err, "failed getting URI %s", source)
+		}
+		defer resp.Body.Close()
+
+		failed := false
+		if resp.StatusCode != http.StatusOK {
+			c.Logger.Printf("non ok http response for URI %s code: %v", source, resp.StatusCode)
+			failed = true
+		}
+
+		// todo
+		// sha512.New()
+
+		var expectedSha string
+		if !failed {
+			h := sha256.New()
+			if _, err := io.Copy(h, resp.Body); err != nil {
+				return errors.Wrapf(err, "generating sha265 for %s", source)
+			}
+			expectedSha = fmt.Sprintf("%x", h.Sum(nil))
+		} else {
+			expectedSha = "FIXME - SOURCE URL NOT VALID"
+		}
+
+		pipeline := build.Pipeline{
+			Uses: "fetch",
+			With: map[string]string{
+				"uri":             strings.ReplaceAll(source, apkBuild.PackageVersion, "${{package.version}}"),
+				"expected-sha256": expectedSha,
+			},
+		}
+		converter.GeneratedMelageConfig.Pipeline = append(converter.GeneratedMelageConfig.Pipeline, pipeline)
 	}
-	converter.GeneratedMelageConfig.Pipeline = append(converter.GeneratedMelageConfig.Pipeline, pipeline)
 
 	return nil
 }
@@ -389,15 +530,26 @@ func (c ApkConvertor) mapMelange() {
 	}
 	c.GeneratedMelageConfig.Package.Copyright = append(c.GeneratedMelageConfig.Package.Copyright, copyright)
 
-	if c.ApkBuild.CMake {
+	switch c.ApkBuild.BuilderType {
+
+	case BuilderTypeCMake:
 		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "cmake/configure"})
 		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "cmake/build"})
 		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "cmake/install"})
 
-	} else {
+	case BuilderTypeMeson:
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "meson/configure"})
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "meson/compile"})
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "meson/install"})
+
+	case BuilderTypeMake:
 		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/configure"})
 		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make"})
 		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "autoconf/make-install"})
+
+	default:
+		c.GeneratedMelageConfig.Pipeline = append(c.GeneratedMelageConfig.Pipeline, build.Pipeline{Uses: "# FIXME"})
+
 	}
 
 	for _, subPackage := range c.ApkBuild.SubPackages {

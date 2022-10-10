@@ -22,3 +22,5 @@ local-melange.rsa
 local-melange.rsa.pub
 packages/
 generated/
+
+.DS_Store
