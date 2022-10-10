@@ -126,6 +126,7 @@ func TestContext_getSourceSha(t *testing.T) {
 
 	type fields struct {
 		ExpectedSha    string
+		Sha512         string
 		TestUrl        string
 		PackageVersion string
 	}
@@ -136,37 +137,48 @@ func TestContext_getSourceSha(t *testing.T) {
 		{
 			name: "tar.xz",
 			fields: fields{
-				TestUrl:        "foo-$pkgver.tar.xz",
+				TestUrl:        "foo-1.2.3.tar.xz",
 				PackageVersion: "1.2.3",
+				Sha512:         "45c3e1ad1cc945ba83cf95e439d9d83520df955e53612efd592f53c173a118a949780c619bb744631c0867474bd770dc0308e0669732ab5d4bffcf417f3e9014",
 				ExpectedSha:    "6b23c4b39242db1d58ab397387b7a3a325e903cd4df332f5a089ac63cc1ca049",
 			},
 		},
 		{
 			name: "tar.gz",
 			fields: fields{
-				TestUrl:        "bar-$pkgver.tar.gz",
+				TestUrl:        "bar-4.5.6.tar.gz",
 				PackageVersion: "4.5.6",
+				Sha512:         "3676c02e883fc26800bcd8542c4cc476a00fb5505c5019433c8316a401565317630803150d8a75d1f3111909c445b700dd123d3c0310a56849d76ed9f72da5cd",
 				ExpectedSha:    "cc2c52929ace57623ff517408a577e783e10042655963b2c8f0633e109337d7a",
 			},
 		},
 		{
 			name: "tar.bz2",
 			fields: fields{
-				TestUrl:        "cheese-$pkgver.tar.bz2",
+				TestUrl:        "cheese-7.8.9.tar.bz2",
 				PackageVersion: "7.8.9",
+				Sha512:         "2a83fd55473a74d2cf4110449070978fb5765cac13862ab926f1af3b88259e80dac61ec3a82319cf7fabfc90427436d73d70f201c28504f8222fb908e00bd797",
 				ExpectedSha:    "8452aa9c8cefc805c8930bc53394c7de15f43edc82dd86e619d794cd7f60b410",
+			},
+		},
+		{
+			name: "bad",
+			fields: fields{
+				TestUrl:        "cheese-7.8.9.tar.bz2",
+				PackageVersion: "7.8.9",
+				Sha512:         "nonmatchingsha512",
+				ExpectedSha:    "SHA512 DOES NOT MATCH SOURCE - VALIDATE MANUALLY",
 			},
 		},
 	}
 	for _, tt := range tests {
 		// read testdata file
-		testFilename := strings.ReplaceAll(tt.fields.TestUrl, "$pkgver", tt.fields.PackageVersion)
-		data, err := os.ReadFile(filepath.Join("testdata", testFilename))
+		data, err := os.ReadFile(filepath.Join("testdata", tt.fields.TestUrl))
 		assert.NoError(t, err)
 
 		server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 			// Test request parameters
-			assert.Equal(t, req.URL.String(), "/"+testFilename)
+			assert.Equal(t, req.URL.String(), "/"+tt.fields.TestUrl)
 
 			// Send response to be tested
 			_, err = rw.Write(data)
@@ -186,6 +198,11 @@ func TestContext_getSourceSha(t *testing.T) {
 					},
 				},
 				Pkgver: tt.fields.PackageVersion,
+				Sha512sums: []apkbuild.SourceHash{
+					{
+						Source: tt.fields.TestUrl,
+						Hash:   tt.fields.Sha512},
+				},
 			},
 			GeneratedMelageConfig: &GeneratedMelageConfig{},
 		}
@@ -193,7 +210,8 @@ func TestContext_getSourceSha(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 
 			with := map[string]string{
-				"uri":             server.URL + "/" + strings.ReplaceAll(testFilename, tt.fields.PackageVersion, "${{package.version}}"),
+				"uri": server.URL + "/" + strings.ReplaceAll(tt.fields.TestUrl, tt.fields.PackageVersion, "${{package.version}}"),
+				//"uri":             server.URL + "/" + tt.fields.TestUrl,
 				"expected-sha256": tt.fields.ExpectedSha,
 			}
 			pipeline := build.Pipeline{Uses: "fetch", With: with}

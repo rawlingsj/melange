@@ -5,6 +5,7 @@ import (
 	"chainguard.dev/melange/pkg/build"
 	"chainguard.dev/melange/pkg/convert/wolfios"
 	"crypto/sha256"
+	"crypto/sha512"
 	"fmt"
 	"github.com/pkg/errors"
 	"gitlab.alpinelinux.org/alpine/go/apkbuild"
@@ -247,15 +248,16 @@ func (c Context) buildFetchStep(converter ApkConvertor) error {
 	// there can be multiple sources, let's add them all so it's easier for users to remove from generated files if not needed
 	for _, source := range apkBuild.Source {
 
+		location := source.Location
 		// replace typical placeholders found in APKBUILD files
-		location := strings.ReplaceAll(source.Location, "$pkgver", apkBuild.Pkgver)
-		location = strings.ReplaceAll(location, "${pkgver%.*}", apkBuild.Pkgver)
-		location = strings.ReplaceAll(location, "$_pkgver", apkBuild.Pkgver)
-		location = strings.ReplaceAll(location, "${_pkgver}", apkBuild.Pkgver)
-		location = strings.ReplaceAll(location, "${pkgver//./-}", strings.ReplaceAll(apkBuild.Pkgver, ".", "-"))
-		location = strings.ReplaceAll(location, "$pkgname", apkBuild.Pkgname)
-		location = strings.ReplaceAll(location, "$_pkgname", apkBuild.Pkgname)
-		location = strings.ReplaceAll(location, "${pkgname}", apkBuild.Pkgname)
+		//location := strings.ReplaceAll(source.Location, "$pkgver", apkBuild.Pkgver)
+		//location = strings.ReplaceAll(location, "${pkgver%.*}", apkBuild.Pkgver)
+		//location = strings.ReplaceAll(location, "$_pkgver", apkBuild.Pkgver)
+		//location = strings.ReplaceAll(location, "${_pkgver}", apkBuild.Pkgver)
+		//location = strings.ReplaceAll(location, "${pkgver//./-}", strings.ReplaceAll(apkBuild.Pkgver, ".", "-"))
+		//location = strings.ReplaceAll(location, "$pkgname", apkBuild.Pkgname)
+		//location = strings.ReplaceAll(location, "$_pkgname", apkBuild.Pkgname)
+		//location = strings.ReplaceAll(location, "${pkgname}", apkBuild.Pkgname)
 
 		_, err := url.ParseRequestURI(location)
 		if err != nil {
@@ -276,16 +278,39 @@ func (c Context) buildFetchStep(converter ApkConvertor) error {
 			failed = true
 		}
 
-		// todo
-		// sha512.New()
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return errors.Wrapf(err, "failed getting URI %s", location)
+		}
 
 		var expectedSha string
 		if !failed {
-			h := sha256.New()
-			if _, err := io.Copy(h, resp.Body); err != nil {
-				return errors.Wrapf(err, "generating sha265 for %s", location)
+
+			// validate the source we are using matches the correct sha512 in the APKBIULD
+			validated := false
+			for _, shas := range apkBuild.Sha512sums {
+				if shas.Source == source.Filename {
+
+					h512 := sha512.New()
+					h512.Write(b)
+
+					if shas.Hash == fmt.Sprintf("%x", h512.Sum(nil)) {
+						validated = true
+					}
+				}
 			}
-			expectedSha = fmt.Sprintf("%x", h.Sum(nil))
+
+			// now generate the 256 sha we need for a melange config
+			if !validated {
+				expectedSha = "SHA512 DOES NOT MATCH SOURCE - VALIDATE MANUALLY"
+				c.Logger.Printf("source %s expected sha512 do not match!", source.Filename)
+			} else {
+				h256 := sha256.New()
+				h256.Write(b)
+
+				expectedSha = fmt.Sprintf("%x", h256.Sum(nil))
+			}
+
 		} else {
 			expectedSha = "FIXME - SOURCE URL NOT VALID"
 		}
