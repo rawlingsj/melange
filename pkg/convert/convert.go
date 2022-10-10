@@ -213,8 +213,20 @@ func (c Context) buildMapOfDependencies(apkBuildURI, pkgName string) error {
 
 		// if we don't already have this dependency in the map, go get it
 		_, exists = c.ApkConvertors[dep]
-		if !exists {
+		if exists {
+			// move dependency to the end of our ordered keys to ensure we generate melange configs in the correct order
+			var reorderdKeys []string
+			for _, key := range c.OrderedKeys {
+				if key != dep {
+					reorderdKeys = append(reorderdKeys, key)
+				}
+			}
 
+			reorderdKeys = append(reorderdKeys, dep)
+			c.OrderedKeys = reorderdKeys
+
+		} else {
+			// if the dependency doesn't already exist let's go and get it
 			err := c.getApkBuildFile(dependencyApkBuildURI, dep)
 			if err != nil {
 				// log and skip this dependency if there's an issue getting the APKBUILD as we are guessing the location of the APKBUILD
@@ -226,13 +238,12 @@ func (c Context) buildMapOfDependencies(apkBuildURI, pkgName string) error {
 			if err != nil {
 				return errors.Wrap(err, "building map of dependencies")
 			}
-
 		}
 	}
 	return nil
 }
 
-// add pipeline fetch steps and validate checksums
+// add pipeline fetch steps, validate checksums and generate melange expected sha
 func (c Context) buildFetchStep(converter ApkConvertor) error {
 
 	apkBuild := converter.Apkbuild
@@ -249,15 +260,6 @@ func (c Context) buildFetchStep(converter ApkConvertor) error {
 	for _, source := range apkBuild.Source {
 
 		location := source.Location
-		// replace typical placeholders found in APKBUILD files
-		//location := strings.ReplaceAll(source.Location, "$pkgver", apkBuild.Pkgver)
-		//location = strings.ReplaceAll(location, "${pkgver%.*}", apkBuild.Pkgver)
-		//location = strings.ReplaceAll(location, "$_pkgver", apkBuild.Pkgver)
-		//location = strings.ReplaceAll(location, "${_pkgver}", apkBuild.Pkgver)
-		//location = strings.ReplaceAll(location, "${pkgver//./-}", strings.ReplaceAll(apkBuild.Pkgver, ".", "-"))
-		//location = strings.ReplaceAll(location, "$pkgname", apkBuild.Pkgname)
-		//location = strings.ReplaceAll(location, "$_pkgname", apkBuild.Pkgname)
-		//location = strings.ReplaceAll(location, "${pkgname}", apkBuild.Pkgname)
 
 		_, err := url.ParseRequestURI(location)
 		if err != nil {
@@ -343,6 +345,10 @@ func (c ApkConvertor) mapMelange() {
 	}
 	c.GeneratedMelageConfig.Package.Copyright = append(c.GeneratedMelageConfig.Package.Copyright, copyright)
 
+	if c.Apkbuild.Funcs["build"] != nil {
+		// todo lets check the command and add the correct cmake | make | meson melange pipelines
+	}
+
 	//switch c.Apkbuild.BuilderType {
 	//
 	//case BuilderTypeCMake:
@@ -382,8 +388,10 @@ func (c ApkConvertor) mapMelange() {
 				subpackage.Dependencies = build.Dependencies{
 					Runtime: []string{c.Apkbuild.Pkgname},
 				}
-			case "locales":
-				ext = "dev"
+				// include dev dependencies in the dev runtime
+				for _, dependsDev := range c.Apkbuild.DependsDev {
+					subpackage.Dependencies.Runtime = append(subpackage.Dependencies.Runtime, dependsDev.Pkgname)
+				}
 			default:
 				// if we don't recognise the extension make it obvious user needs to manually fix the config
 				ext = "FIXME"

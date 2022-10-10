@@ -65,6 +65,9 @@ func TestGetApkDependencies(t *testing.T) {
 	_, exists = context.ApkConvertors["wine"]
 	assert.True(t, exists, "wine not found")
 
+	// assert correct order
+	assert.Equal(t, []string{"bar", "foo", "crisps", "wine", "beer", "cheese"}, context.OrderedKeys)
+
 }
 
 func TestGetApkBuildFile(t *testing.T) {
@@ -210,8 +213,7 @@ func TestContext_getSourceSha(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 
 			with := map[string]string{
-				"uri": server.URL + "/" + strings.ReplaceAll(tt.fields.TestUrl, tt.fields.PackageVersion, "${{package.version}}"),
-				//"uri":             server.URL + "/" + tt.fields.TestUrl,
+				"uri":             server.URL + "/" + strings.ReplaceAll(tt.fields.TestUrl, tt.fields.PackageVersion, "${{package.version}}"),
 				"expected-sha256": tt.fields.ExpectedSha,
 			}
 			pipeline := build.Pipeline{Uses: "fetch", With: with}
