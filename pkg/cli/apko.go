@@ -17,6 +17,7 @@ package cli
 import (
 	"chainguard.dev/melange/pkg/convert"
 	"context"
+	"fmt"
 	"github.com/pkg/errors"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 
 type options struct {
 	outDir                 string
+	baseURIFormat          string
 	additionalRepositories []string
 	additionalKeyrings     []string
 }
@@ -34,9 +36,9 @@ func ApkBuild() *cobra.Command {
 	o := &options{}
 	cmd := &cobra.Command{
 		Use:     "apkbuild",
-		Short:   "Converts an APKBUILD file into a melange.yaml",
-		Long:    `Converts an APKBUILD file into a melange.yaml.`,
-		Example: `  melange convert apkbuild https://foo.com/releases/APKBUILD`,
+		Short:   "Converts an APKBUILD package into a melange.yaml",
+		Long:    `Converts an APKBUILD package into a melange.yaml.`,
+		Example: `  melange convert apkbuild libx11`,
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 
@@ -53,13 +55,14 @@ func ApkBuild() *cobra.Command {
 		cwd = "."
 	}
 	cmd.Flags().StringVar(&o.outDir, "out-dir", filepath.Join(cwd, "generated"), "directory where melange config will be output")
+	cmd.Flags().StringVar(&o.baseURIFormat, "base-uri-format", "https://git.alpinelinux.org/aports/plain/main/%s/APKBUILD", "URI to use for querying APKBUILD for provided package name")
 	cmd.Flags().StringArrayVar(&o.additionalRepositories, "additional-repositories", []string{}, "additional repositories to be added to melange environment config")
 	cmd.Flags().StringArrayVar(&o.additionalKeyrings, "additional-keyrings", []string{}, "additional repositories to be added to melange environment config")
 
 	return cmd
 }
 
-func (o options) ApkBuildCmd(ctx context.Context, configFilename string) error {
+func (o options) ApkBuildCmd(ctx context.Context, packageName string) error {
 	context, err := convert.New()
 	if err != nil {
 		return errors.Wrap(err, "initialising convert command")
@@ -69,7 +72,11 @@ func (o options) ApkBuildCmd(ctx context.Context, configFilename string) error {
 	context.AdditionalKeyrings = o.additionalKeyrings
 	context.OutDir = o.outDir
 
-	err = context.Generate(configFilename)
+	configFilename := fmt.Sprintf(o.baseURIFormat, packageName)
+
+	context.Logger.Printf("generating melange config files for APKBUILD %s", configFilename)
+
+	err = context.Generate(configFilename, packageName)
 	if err != nil {
 		return errors.Wrap(err, "generating melange configuration")
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"chainguard.dev/melange/pkg/build"
 	"github.com/stretchr/testify/assert"
+	"gitlab.alpinelinux.org/alpine/go/apkbuild"
 	"golang.org/x/time/rate"
 	"gopkg.in/yaml.v3"
 	"log"
@@ -47,27 +48,27 @@ func TestGetApkDependencies(t *testing.T) {
 	context := getTestContext(t, server)
 
 	// the top level APKBUILD is cheese
-	err = context.Generate(server.URL + "/" + "cheese")
+	err = context.Generate(server.URL+"/"+"cheese", "cheese")
 	assert.NoError(t, err)
 
 	// assert all dependencies were found
-	_, exists := context.ApkConvertors[server.URL+"/bar"]
-	assert.True(t, exists, "/bar not found")
-	_, exists = context.ApkConvertors[server.URL+"/beer"]
-	assert.True(t, exists, "/beer not found")
-	_, exists = context.ApkConvertors[server.URL+"/cheese"]
-	assert.True(t, exists, "/cheese not found")
-	_, exists = context.ApkConvertors[server.URL+"/crisps"]
-	assert.True(t, exists, "/crisps not found")
-	_, exists = context.ApkConvertors[server.URL+"/foo"]
-	assert.True(t, exists, "/foo not found")
-	_, exists = context.ApkConvertors[server.URL+"/wine"]
-	assert.True(t, exists, "/wine not found")
+	_, exists := context.ApkConvertors["bar"]
+	assert.True(t, exists, "bar not found")
+	_, exists = context.ApkConvertors["beer"]
+	assert.True(t, exists, "beer not found")
+	_, exists = context.ApkConvertors["cheese"]
+	assert.True(t, exists, "cheese not found")
+	_, exists = context.ApkConvertors["crisps"]
+	assert.True(t, exists, "crisps not found")
+	_, exists = context.ApkConvertors["foo"]
+	assert.True(t, exists, "foo not found")
+	_, exists = context.ApkConvertors["wine"]
+	assert.True(t, exists, "wine not found")
 
 }
 
 func TestGetApkBuildFile(t *testing.T) {
-	configFilename := "/aports/tree/main/util-macros/APKBUILD"
+	pkgName := "util-macros"
 
 	data, err := os.ReadFile(filepath.Join("testdata", "APKBUILD_DATA"))
 	assert.NoError(t, err)
@@ -76,7 +77,7 @@ func TestGetApkBuildFile(t *testing.T) {
 	// Start a local HTTP server
 	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		// Test request parameters
-		assert.Equal(t, req.URL.String(), configFilename)
+		assert.Equal(t, req.URL.String(), "/"+pkgName)
 		// Send response to be tested
 		_, err = rw.Write(data)
 		assert.NoError(t, err)
@@ -88,23 +89,36 @@ func TestGetApkBuildFile(t *testing.T) {
 	context := getTestContext(t, server)
 
 	context.Client.client = server.Client()
-	err = context.getApkBuildFile(server.URL + configFilename)
+	err = context.getApkBuildFile(server.URL+"/"+pkgName, pkgName)
 	assert.NoError(t, err)
 
 	assert.Equal(t, 1, len(context.ApkConvertors), "apk converter not found")
 
-	apkbuild := context.ApkConvertors[server.URL+configFilename].ApkBuild
-	assert.Equal(t, "libx11", apkbuild.PackageName)
-	assert.Equal(t, "1.8.1", apkbuild.PackageVersion)
-	assert.Equal(t, "1", apkbuild.PackageRel)
-	assert.Equal(t, "X11 client-side library", apkbuild.PackageDesc)
-	assert.Equal(t, "https://xorg.freedesktop.org/", apkbuild.PackageUrl)
-	assert.Equal(t, []string{"all"}, apkbuild.Arch)
-	assert.Equal(t, "custom:XFREE86", apkbuild.License)
-	assert.Equal(t, []string{"https://www.x.org/releases/individual/lib/libX11-$pkgver.tar.xz"}, apkbuild.Source)
-	assert.Equal(t, []string{"$pkgname-static", "$pkgname-dev", "$pkgname-doc"}, apkbuild.SubPackages)
-	assert.Equal(t, []string{"libxcb-dev", "xtrans"}, apkbuild.DependDev)
-	assert.Equal(t, []string{"$depends_dev", "xorgproto", "util-macros", "xmlto"}, apkbuild.MakeDepends)
+	parsedApkbuild := context.ApkConvertors[pkgName].Apkbuild
+	assert.Equal(t, "libx11", parsedApkbuild.Pkgname)
+	assert.Equal(t, "1.8.1", parsedApkbuild.Pkgver)
+	assert.Equal(t, "1", parsedApkbuild.Pkgrel)
+	assert.Equal(t, "X11 client-side library", parsedApkbuild.Pkgdesc)
+	assert.Equal(t, "https://xorg.freedesktop.org/", parsedApkbuild.Url)
+	assert.Equal(t, apkbuild.Arches{"all"}, parsedApkbuild.Arch)
+	assert.Equal(t, "custom:XFREE86", parsedApkbuild.License)
+	assert.Equal(t, []apkbuild.Source{{Filename: "libX11-1.8.1.tar.xz", Location: "https://www.x.org/releases/individual/lib/libX11-1.8.1.tar.xz"}}, parsedApkbuild.Source)
+
+	assert.Equal(t, 3, len(parsedApkbuild.Subpackages))
+	assert.Equal(t, "libx11-static", parsedApkbuild.Subpackages[0].Subpkgname)
+	assert.Equal(t, "libx11-dev", parsedApkbuild.Subpackages[1].Subpkgname)
+	assert.Equal(t, "libx11-doc", parsedApkbuild.Subpackages[2].Subpkgname)
+
+	assert.Equal(t, 2, len(parsedApkbuild.DependsDev))
+	assert.Equal(t, "libxcb-dev", parsedApkbuild.DependsDev[0].Pkgname)
+	assert.Equal(t, "xtrans", parsedApkbuild.DependsDev[1].Pkgname)
+
+	assert.Equal(t, 5, len(parsedApkbuild.Makedepends))
+	assert.Equal(t, "libxcb-dev", parsedApkbuild.Makedepends[0].Pkgname)
+	assert.Equal(t, "xtrans", parsedApkbuild.Makedepends[1].Pkgname)
+	assert.Equal(t, "xorgproto", parsedApkbuild.Makedepends[2].Pkgname)
+	assert.Equal(t, "util-macros", parsedApkbuild.Makedepends[3].Pkgname)
+	assert.Equal(t, "xmlto", parsedApkbuild.Makedepends[4].Pkgname)
 
 }
 
@@ -164,9 +178,14 @@ func TestContext_getSourceSha(t *testing.T) {
 		c := getTestContext(t, server)
 
 		c.ApkConvertors[tt.name] = ApkConvertor{
-			ApkBuild: &ApkBuild{
-				Source:         []string{server.URL + "/" + tt.fields.TestUrl},
-				PackageVersion: tt.fields.PackageVersion,
+			Apkbuild: &apkbuild.Apkbuild{
+				Source: []apkbuild.Source{
+					{
+						Filename: tt.fields.TestUrl,
+						Location: server.URL + "/" + tt.fields.TestUrl,
+					},
+				},
+				Pkgver: tt.fields.PackageVersion,
 			},
 			GeneratedMelageConfig: &GeneratedMelageConfig{},
 		}
@@ -185,23 +204,23 @@ func TestContext_getSourceSha(t *testing.T) {
 		})
 	}
 }
+
 func Test_context_mapMelange(t *testing.T) {
 
-	apkBuild := &ApkBuild{
-		PackageName:    "test_pkg",
-		PackageVersion: "1.2.3",
-		PackageRel:     "1",
-		PackageDesc:    "test package description",
-		PackageUrl:     "https://foo.com",
-		Arch:           []string{"all"},
-		License:        "MIT",
-		BuilderType:    "make",
+	apkBuild := &apkbuild.Apkbuild{
+		Pkgname: "test_pkg",
+		Pkgver:  "1.2.3",
+		Pkgrel:  "1",
+		Pkgdesc: "test package description",
+		Url:     "https://foo.com",
+		Arch:    []string{"all"},
+		License: "MIT",
 	}
 
 	tests := []struct {
 		name        string
 		subPackages []string
-		apkBuild    *ApkBuild
+		apkBuild    *apkbuild.Apkbuild
 	}{
 		{
 			name: "no_sub_packages",
@@ -217,14 +236,23 @@ func Test_context_mapMelange(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			apkBuild.SubPackages = tt.subPackages
+
+			subpackages := []apkbuild.Subpackage{}
+			for _, subpackage := range tt.subPackages {
+				subpackages = append(subpackages, apkbuild.Subpackage{
+					Subpkgname: subpackage,
+				})
+			}
+
+			apkBuild.Subpackages = subpackages
+
 			c := Context{
 				NavigationMap: &NavigationMap{
 					ApkConvertors: make(map[string]ApkConvertor),
 				},
 			}
 			c.ApkConvertors[tt.name] = ApkConvertor{
-				ApkBuild:              apkBuild,
+				Apkbuild:              apkBuild,
 				GeneratedMelageConfig: &GeneratedMelageConfig{},
 			}
 			c.ApkConvertors[tt.name].mapMelange()
@@ -241,49 +269,24 @@ func Test_context_mapMelange(t *testing.T) {
 		})
 	}
 }
-func TestScannerError(t *testing.T) {
-
-	data, err := os.ReadFile(filepath.Join("testdata", "scanner_error.yaml"))
-	assert.NoError(t, err)
-	c := Context{
-		NavigationMap: &NavigationMap{
-			ApkConvertors: make(map[string]ApkConvertor),
-		},
-		Logger: log.New(log.Writer(), "unittest: ", log.LstdFlags|log.Lmsgprefix),
-	}
-	key := "https://git.alpinelinux.org/aports/plain/main/libxext/APKBUILD"
-	c.ApkConvertors[key] = ApkConvertor{
-		ApkBuild: &ApkBuild{},
-	}
-
-	c.parseApkBuild(bytes.NewReader(data), key)
-	assert.NoError(t, err)
-	assert.Equal(t, []string{"https://www.x.org/releases/individual/lib/libXext-$pkgver.tar.bz2"}, c.ApkConvertors[key].ApkBuild.Source)
-}
 
 func TestMultilineParsing(t *testing.T) {
 
-	data, err := os.ReadFile(filepath.Join("testdata", "multi_source", "APKBUILD-short"))
+	data, err := os.ReadFile(filepath.Join("testdata", "multi_source", "APKBUILD"))
 	assert.NoError(t, err)
-	c := Context{
-		NavigationMap: &NavigationMap{
-			ApkConvertors: make(map[string]ApkConvertor),
-		},
-		Logger: log.New(log.Writer(), "unittest: ", log.LstdFlags|log.Lmsgprefix),
-	}
-	key := "https://git.alpinelinux.org/aports/plain/main/icu/APKBUILD"
-	c.ApkConvertors[key] = ApkConvertor{
-		ApkBuild: &ApkBuild{},
-	}
 
-	c.parseApkBuild(bytes.NewReader(data), key)
+	key := "icu"
+
+	apkBuildFile := apkbuild.NewApkbuildFile(key, bytes.NewReader(data))
+	parsedApkBuild, err := apkbuild.Parse(apkBuildFile, nil)
+
 	assert.NoError(t, err)
-	assert.Equal(t, 7, len(c.ApkConvertors[key].ApkBuild.Source))
+	assert.Equal(t, 4, len(parsedApkBuild.Sha512sums))
 
-	assert.Equal(t, "1fd2a20aef48369d1f06e2bb74584877b8ad0eb529320b976264ec2db87420bae242715795f372dbc513ea80047bc49077a064e78205cd5e8b33d746fd2a2912", c.ApkConvertors[key].ApkBuild.Sha512sums["icu4c-71_1-src.tgz"])
-	assert.Equal(t, "05eb134a963a541a280e49e4d0aca07e480fef14daa0108c8fb9add18c150c9d34c8cbc46386c07909d511f7777eb3ea9f494001f191b84a7de0be8047da8b56", c.ApkConvertors[key].ApkBuild.Sha512sums["icu4c-71_1-data.zip"])
-	assert.Equal(t, "b031e520d41cc313012a0a9d9c4eed51aee9e04213b810bcec32e18d0964f4f26448b989879a9d8901d29024da08ce2ac89c8c6d321c85d78f6414b5edebc1a4", c.ApkConvertors[key].ApkBuild.Sha512sums["001-fix-heap-buffer-overflow.patch"])
-	assert.Equal(t, "de2cd008406d133cc838388f5a109560d29323e0a4c8c6306f712a536b6d90846d44bc5f691514621653f33a2929c0d84fa9c54d61d5ddf4606243df63c7e139", c.ApkConvertors[key].ApkBuild.Sha512sums["skip-flawed-tests.patch"])
+	assert.Equal(t, "1fd2a20aef48369d1f06e2bb74584877b8ad0eb529320b976264ec2db87420bae242715795f372dbc513ea80047bc49077a064e78205cd5e8b33d746fd2a2912", parsedApkBuild.Sha512sums[0].Hash)
+	assert.Equal(t, "05eb134a963a541a280e49e4d0aca07e480fef14daa0108c8fb9add18c150c9d34c8cbc46386c07909d511f7777eb3ea9f494001f191b84a7de0be8047da8b56", parsedApkBuild.Sha512sums[1].Hash)
+	assert.Equal(t, "b031e520d41cc313012a0a9d9c4eed51aee9e04213b810bcec32e18d0964f4f26448b989879a9d8901d29024da08ce2ac89c8c6d321c85d78f6414b5edebc1a4", parsedApkBuild.Sha512sums[2].Hash)
+	assert.Equal(t, "de2cd008406d133cc838388f5a109560d29323e0a4c8c6306f712a536b6d90846d44bc5f691514621653f33a2929c0d84fa9c54d61d5ddf4606243df63c7e139", parsedApkBuild.Sha512sums[3].Hash)
 }
 
 func getTestContext(t *testing.T, server *httptest.Server) Context {
