@@ -179,7 +179,6 @@ func (c Context) getApkBuildFile(apkbuildURL, packageName string) error {
 		},
 	}
 	c.OrderedKeys = append(c.OrderedKeys, packageName)
-	//apkbuild := c.ApkConvertors[packageName].ApkBuild
 	return nil
 }
 
@@ -191,10 +190,21 @@ func (c Context) buildMapOfDependencies(apkBuildURI, pkgName string) error {
 		return fmt.Errorf("no top level apk convertor found for URI %s", apkBuildURI)
 	}
 
-	// recursively loop round and add any missing dependencies to the map
-	for _, makeDep := range convertor.Apkbuild.Makedepends {
+	var dependencies []string
+	for _, depends := range convertor.Apkbuild.Depends {
+		dependencies = append(dependencies, depends.Pkgname)
+	}
+	for _, depends := range convertor.Apkbuild.Makedepends {
+		dependencies = append(dependencies, depends.Pkgname)
+	}
 
-		dep := makeDep.Pkgname
+	for _, depends := range convertor.Apkbuild.DependsDev {
+		dependencies = append(dependencies, depends.Pkgname)
+	}
+
+	// recursively loop round and add any missing dependencies to the map
+	for _, dep := range dependencies {
+
 		if strings.TrimSpace(dep) == "" {
 			continue
 		}
@@ -337,6 +347,7 @@ func (c ApkConvertor) mapMelange() {
 	c.GeneratedMelageConfig.Package.Description = c.Apkbuild.Pkgdesc
 	c.GeneratedMelageConfig.Package.Version = c.Apkbuild.Pkgver
 	c.GeneratedMelageConfig.Package.TargetArchitecture = c.Apkbuild.Arch
+	c.GeneratedMelageConfig.Package.Epoch = 0
 
 	copyright := build.Copyright{
 		Paths:       []string{"*"},
@@ -392,6 +403,9 @@ func (c ApkConvertor) mapMelange() {
 				for _, dependsDev := range c.Apkbuild.DependsDev {
 					subpackage.Dependencies.Runtime = append(subpackage.Dependencies.Runtime, dependsDev.Pkgname)
 				}
+				for _, depends := range c.Apkbuild.Depends {
+					subpackage.Dependencies.Runtime = append(subpackage.Dependencies.Runtime, depends.Pkgname)
+				}
 			default:
 				// if we don't recognise the extension make it obvious user needs to manually fix the config
 				ext = "FIXME"
@@ -439,6 +453,7 @@ func (c ApkConvertor) buildEnvironment(additionalRepositories, additionalKeyring
 	env.Contents.Repositories = append(env.Contents.Repositories, additionalRepositories...)
 	env.Contents.Keyring = append(env.Contents.Keyring, additionalKeyrings...)
 	for _, makedepend := range c.Apkbuild.Makedepends {
+		
 		env.Contents.Packages = append(env.Contents.Packages, makedepend.Pkgname)
 	}
 
@@ -448,6 +463,10 @@ func (c ApkConvertor) buildEnvironment(additionalRepositories, additionalKeyring
 			d = d + "-dev"
 		}
 		env.Contents.Packages = append(env.Contents.Packages, d)
+	}
+
+	for _, depends := range c.Apkbuild.Depends {
+		env.Contents.Packages = append(env.Contents.Packages, depends.Pkgname)
 	}
 
 	for i, p := range env.Contents.Packages {
